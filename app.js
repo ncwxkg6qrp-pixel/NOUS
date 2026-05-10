@@ -1399,7 +1399,7 @@ function renderCard(e){
         <span class="card-section-arrow">▾</span>
       </div>
       <div class="card-section-body">
-        ${sortedSubs.slice(0,3).map(s=>`<div class="sub-row"><div class="sub-dot"></div><span>${esc(s.title)||'—'}${s.date?' · '+fmtD(s.date):''}${s.time?' · '+s.time:''}</span></div>`).join('')}
+        ${sortedSubs.slice(0,3).map(s=>`<div class="sub-row"><div class="sub-dot"></div><span>${esc(s.title)||'—'}${s.date?' · '+fmtD(s.date):''}${s.time?' · '+esc(s.time):''}</span></div>`).join('')}
         ${e.subevents.length>3?`<div style="font-size:0.72rem;color:var(--text3);margin-top:2px">+${e.subevents.length-3} weitere</div>`:''}
       </div>
     </div>`;
@@ -1427,9 +1427,9 @@ function renderCard(e){
   // Transport summary — chronological across all persons
   const tr=e.transport||{};
   const cardLegStr=leg=>{
-    if(leg.type==='flug'&&leg.data){const f=leg.data;return `${f.num||''} ${f.from||''}→${f.to||''}${f.dep?' · '+f.dep:''}${f.arr?'–'+f.arr:''}`.trim();}
-    if(leg.type==='zug'&&leg.data){const t=leg.data;return `${t.num||''} ${t.from||''}→${t.to||''}${t.dep?' · '+t.dep:''}${t.arr?'–'+t.arr:''}`.trim();}
-    if(leg.type==='auto') return [leg.eta?'ETA '+leg.eta:'',leg.note?esc(leg.note):''].filter(Boolean).join(' · ')||'Auto';
+    if(leg.type==='flug'&&leg.data){const f=leg.data;return `${esc(f.num)} ${esc(f.from)}→${esc(f.to)}${f.dep?' · '+esc(f.dep):''}${f.arr?'–'+esc(f.arr):''}`.trim();}
+    if(leg.type==='zug'&&leg.data){const t=leg.data;return `${esc(t.num)} ${esc(t.from)}→${esc(t.to)}${t.dep?' · '+esc(t.dep):''}${t.arr?'–'+esc(t.arr):''}`.trim();}
+    if(leg.type==='auto') return [leg.eta?'ETA '+esc(leg.eta):'',leg.note?esc(leg.note):''].filter(Boolean).join(' · ')||'Auto';
     if(leg.type==='sonstiges') return `⋯ ${esc(leg.note)||''}`;
     return '';
   };
@@ -2468,9 +2468,9 @@ function openPreview(id){
 
   const tr=ev.transport||{};
   const pvLegRow=leg=>{
-    if(leg.type==='flug'&&leg.data){const f=leg.data;return (`${f.num||''}${f.from&&f.to?' · '+navLink(f.from,f.from)+'→'+navLink(f.to,f.to):''}${f.dep?' · '+f.dep:''}${f.arr?'–'+f.arr:''}`).trim();}
-    if(leg.type==='zug'&&leg.data){const t=leg.data;return (`${t.num||''}${t.from&&t.to?' · '+navLink(t.from,t.from)+'→'+navLink(t.to,t.to):''}${t.dep?' · '+t.dep:''}${t.arr?'–'+t.arr:''}`).trim();}
-    return [leg.eta?'ETA '+leg.eta:'',leg.note?esc(leg.note):''].filter(Boolean).join(' · ')||'Auto';
+    if(leg.type==='flug'&&leg.data){const f=leg.data;return (`${esc(f.num)}${f.from&&f.to?' · '+navLink(f.from,f.from)+'→'+navLink(f.to,f.to):''}${f.dep?' · '+esc(f.dep):''}${f.arr?'–'+esc(f.arr):''}`).trim();}
+    if(leg.type==='zug'&&leg.data){const t=leg.data;return (`${esc(t.num)}${t.from&&t.to?' · '+navLink(t.from,t.from)+'→'+navLink(t.to,t.to):''}${t.dep?' · '+esc(t.dep):''}${t.arr?'–'+esc(t.arr):''}`).trim();}
+    return [leg.eta?'ETA '+esc(leg.eta):'',leg.note?esc(leg.note):''].filter(Boolean).join(' · ')||'Auto';
   };
   const pvMatchKey=leg=>{
     if(!leg||!leg.type) return null;
@@ -2519,7 +2519,7 @@ function openPreview(id){
     html+=`<div class="pv-block" style="margin-bottom:8px"><div class="pv-block-title">Subevents (${ev.subevents.length})</div>`+
       sortedSubs.map(s=>`<div style="border-bottom:1px solid var(--border);padding:7px 0;last-child{border:none}">
         <div style="font-size:0.85rem;font-weight:700;color:var(--text)">${esc(s.title)||'—'}</div>
-        <div style="font-size:0.78rem;color:var(--text2)">${fmtD(s.date)}${s.time?' · '+s.time:''} ${s.timeEnd?'– '+s.timeEnd:''} ${s.location?'· '+navLink(s.location):''}</div>
+        <div style="font-size:0.78rem;color:var(--text2)">${fmtD(s.date)}${s.time?' · '+esc(s.time):''} ${s.timeEnd?'– '+esc(s.timeEnd):''} ${s.location?'· '+navLink(s.location):''}</div>
         ${s.todos&&s.todos.length?`<div style="margin-top:4px">`+s.todos.map(t=>`<div style="font-size:0.75rem;color:${t.done?'var(--text3)':'var(--text2)'};text-decoration:${t.done?'line-through':'none'};display:flex;gap:5px;align-items:center;padding:1px 0">
           <span>${t.done?'✓':'○'}</span><span>${esc(t.text)}</span><span style="color:${ownerColors[t.owner||'beide']};font-weight:700;font-size:0.68rem">${ownerLabels[t.owner||'beide']}</span></div>`).join('')+'</div>':''}
       </div>`).join('')+`</div>`;
@@ -2530,7 +2530,7 @@ function openPreview(id){
       ev.accommodations.map(a=>`<div style="font-size:0.78rem;padding:4px 0;border-bottom:1px solid var(--border)">
         <strong style="color:var(--text)">${esc(a.name)||'—'}</strong>
         ${a.cinDate||a.coutDate?`<span style="color:var(--text2)"> · ${a.cinDate?fmtD(a.cinDate):''}${a.coutDate?' – '+fmtD(a.coutDate):''}</span>`:''}
-        ${a.cinTime||a.coutTime?`<div style="color:var(--text2);margin-top:1px">${a.cinTime?'Check-in: '+a.cinTime:''}${a.cinTime&&a.coutTime?' · ':''}${a.coutTime?'Check-out: '+a.coutTime:''}</div>`:''}
+        ${a.cinTime||a.coutTime?`<div style="color:var(--text2);margin-top:1px">${a.cinTime?'Check-in: '+esc(a.cinTime):''}${a.cinTime&&a.coutTime?' · ':''}${a.coutTime?'Check-out: '+esc(a.coutTime):''}</div>`:''}
         ${a.addr?`<div style="margin-top:3px">${navLink(a.addr)}</div>`:''}
         ${a.ref?`<div style="margin-top:2px;color:var(--text2)">Buchungsreferenz: <span style="font-family:monospace;color:var(--text)">${esc(a.ref)}</span></div>`:''}
         ${(sl=>sl?`<div style="margin-top:2px"><a href="${sl}" target="_blank" rel="noopener noreferrer" style="color:var(--blue);font-size:0.75rem;word-break:break-all">🔗 Buchungslink</a></div>`:'')(safeUrl(a.link))}
