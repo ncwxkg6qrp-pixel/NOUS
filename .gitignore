@@ -1,0 +1,4 @@
+git init
+echo ".DS_Store\n*.log\nnode_modules/" > .gitignore
+git add nous-planung-v4.html .gitignore
+git commit -m "Initial commit: Nous v4"
