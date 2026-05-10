@@ -1414,8 +1414,8 @@ function renderCard(e){
         <span class="card-section-arrow">▾</span>
       </div>
       <div class="card-section-body">
-        ${openTodos.slice(0,4).map(t=>`<div class="todo-row">
-          <div class="todo-check" data-action="toggleTodoCard" data-ev-id="${e.id}" data-todo-id="${t.id}">✓</div>
+        ${openTodos.slice(0,4).map(t=>`<div class="todo-row" data-action="toggleTodoCard" data-ev-id="${e.id}" data-todo-id="${t.id}" style="cursor:pointer;padding:4px 0">
+          <div class="todo-check">✓</div>
           <span style="flex:1">${esc(t.text)||'—'}</span>
           <div class="todo-owner-dot ${ownerDot(t.owner||'beide')}"></div>
         </div>`).join('')}
