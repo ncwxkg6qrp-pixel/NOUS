@@ -234,6 +234,16 @@ header{background:var(--blue2);padding:0 16px;box-shadow:0 2px 4px rgba(0,0,0,0.
 .att-row{display:flex;gap:5px;flex-wrap:wrap}
 .att-thumb{width:36px;height:36px;border-radius:4px;background:var(--surface3);border:1px solid var(--border);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:0.9rem}
 .att-thumb img{width:100%;height:100%;object-fit:cover}
+.pv-att{cursor:pointer;transition:transform 0.12s,box-shadow 0.12s;position:relative}
+.pv-att:hover,.pv-att:active{transform:scale(1.05);box-shadow:var(--shadow-md)}
+.att-lightbox{position:fixed;inset:0;z-index:5000;background:rgba(0,0,0,0.88);display:none;align-items:center;justify-content:center;padding:24px;flex-direction:column;gap:12px}
+.att-lightbox.open{display:flex}
+.att-lightbox-close{position:absolute;top:14px;right:16px;width:42px;height:42px;border-radius:50%;background:rgba(255,255,255,0.15);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:1.2rem;border:none}
+.att-lightbox-name{color:#fff;font-size:0.85rem;font-weight:600;max-width:90vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center}
+.att-lightbox-content{max-width:96vw;max-height:84vh;display:flex;align-items:center;justify-content:center}
+.att-lightbox-content img{max-width:96vw;max-height:84vh;object-fit:contain;border-radius:6px}
+.att-lightbox-content iframe{width:92vw;height:82vh;border:none;border-radius:6px;background:#fff}
+.att-lightbox-dl{color:#fff;font-size:0.82rem;text-decoration:underline}
 
 /* TODO PREVIEW IN CARD */
 .todo-row{display:flex;align-items:center;gap:7px;font-size:0.75rem;color:var(--text2);padding:2px 0}
@@ -932,6 +942,13 @@ textarea{resize:vertical;min-height:64px}
       <button class="btn-secondary" data-action="editFromPv">Bearbeiten</button>
     </div>
   </div>
+</div>
+
+<!-- ANHANG-LIGHTBOX -->
+<div class="att-lightbox" id="attLightbox" data-action="closeAttPreview">
+  <div class="att-lightbox-close" data-action="closeAttPreview">✕</div>
+  <div class="att-lightbox-name" id="attLightboxName"></div>
+  <div class="att-lightbox-content" id="attLightboxContent" data-action="stopProp"></div>
 </div>
 
 <!-- NAV PICKER -->

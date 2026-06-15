@@ -2043,6 +2043,57 @@ function collectSubs(){
 function safeDataImg(data){
   return typeof data==='string'&&/^data:image\/(jpeg|png|gif|webp);base64,/.test(data)?data:'';
 }
+// safeDataPdf: validate base64 PDF data URI before embedding.
+function safeDataPdf(data){
+  return typeof data==='string'&&/^data:application\/pdf;base64,/.test(data)?data:'';
+}
+
+// ATTACHMENT LIGHTBOX
+// Open a full-size preview when an attachment in the preview modal is tapped.
+// Images are shown inline; PDFs open in a new tab via a blob URL (the strict
+// CSP forbids framing data:/blob: URLs, so we can't embed them in-page).
+let attBlobUrl=null;
+function dataUriToBlobUrl(dataUri,mime){
+  const b64=dataUri.split(',')[1];if(!b64)return null;
+  const raw=atob(b64);
+  const bytes=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes],{type:mime}));
+}
+function revokeAttBlob(){if(attBlobUrl){URL.revokeObjectURL(attBlobUrl);attBlobUrl=null;}}
+function openAttPreview(evId,idx){
+  const ev=events.find(e=>e.id===evId);if(!ev||!ev.attachments)return;
+  const a=ev.attachments[parseInt(idx,10)];if(!a)return;
+  const content=document.getElementById('attLightboxContent');
+  const nameEl=document.getElementById('attLightboxName');
+  if(!content)return;
+  revokeAttBlob();
+  nameEl.textContent=a.name||'';
+  if(a.type&&a.type.startsWith('image/')){
+    const src=safeDataImg(a.data);
+    if(!src){showToast('Vorschau nicht verfügbar');return;}
+    content.innerHTML=`<img src="${src}" alt="${esc(a.name||'')}">`;
+  }else if(a.type==='application/pdf'){
+    const src=safeDataPdf(a.data);
+    if(!src){showToast('Vorschau nicht verfügbar');return;}
+    attBlobUrl=dataUriToBlobUrl(src,'application/pdf');
+    if(!attBlobUrl){showToast('Vorschau nicht verfügbar');return;}
+    content.innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;gap:14px;color:#fff">
+      <div style="font-size:3.5rem">📄</div>
+      <a class="att-lightbox-dl" href="${attBlobUrl}" target="_blank" rel="noopener noreferrer">PDF in neuem Tab öffnen</a>
+    </div>`;
+  }else{
+    showToast('Vorschau nicht verfügbar');return;
+  }
+  document.getElementById('attLightbox').classList.add('open');
+}
+function closeAttPreview(){
+  const lb=document.getElementById('attLightbox');
+  if(lb)lb.classList.remove('open');
+  const content=document.getElementById('attLightboxContent');
+  if(content)content.innerHTML='';
+  revokeAttBlob();
+}
 
 // checkMagicB64: verify file magic bytes match the declared MIME type.
 // Defends against renamed files (e.g. .exe renamed to .jpg) and MIME-type spoofing.
@@ -2540,9 +2591,9 @@ function openPreview(id){
 
   if(ev.attachments&&ev.attachments.length){
     html+=`<div class="pv-block"><div class="pv-block-title">Anhänge</div><div style="display:flex;flex-wrap:wrap;gap:6px">`+
-      ev.attachments.map(a=>a.type&&a.type.startsWith('image/')?
-        `<img src="${safeDataImg(a.data)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;border:1px solid var(--border)">`
-        :`<div style="width:60px;height:60px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:1.3rem">📄</div>`
+      ev.attachments.map((a,i)=>a.type&&a.type.startsWith('image/')?
+        `<img class="pv-att" data-action="openAttPreview" data-ev-id="${id}" data-att-idx="${i}" src="${safeDataImg(a.data)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" title="${esc(a.name||'')}">`
+        :`<div class="pv-att" data-action="openAttPreview" data-ev-id="${id}" data-att-idx="${i}" style="width:60px;height:60px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:1.3rem" title="${esc(a.name||'')}">📄<span style="font-size:0.5rem;color:var(--text2);max-width:54px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 3px">${esc(a.name||'')}</span></div>`
       ).join('')+`</div></div>`;
   }
 
@@ -2674,6 +2725,9 @@ document.addEventListener('click', e=>{
       pendingAtt.splice(parseInt(t.dataset.idx),1);
       renderAttList();
       break;
+    // Attachment preview (lightbox)
+    case 'openAttPreview': openAttPreview(t.dataset.evId,t.dataset.attIdx); break;
+    case 'closeAttPreview': closeAttPreview(); break;
   }
 });
 
