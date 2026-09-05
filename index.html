@@ -115,6 +115,10 @@ header{background:var(--blue2);padding:0 16px;box-shadow:0 2px 4px rgba(0,0,0,0.
 .filter-chip.ow-toja.active{border-color:var(--toja-color);background:var(--toja-soft);color:var(--toja-color)}
 .filter-chip.ow-johann.active{border-color:var(--blue);background:var(--blue-soft);color:var(--blue2)}
 .filter-chip.ow-gemeinsam.active{border-color:#6b7a8d;background:#f0f2f5;color:#4a5568}
+/* Sync-Warnung: Übertragungsfehler wurden bisher nur in die Konsole geschrieben
+   und blieben damit unbemerkt, während die App Erfolg meldete. */
+.sync-warning{display:none;background:#fff4e5;border:1.5px solid #f0c48a;border-radius:6px;padding:8px 12px;margin:8px auto 0;max-width:800px;font-size:0.76rem;color:#8a5200;font-weight:600}
+.sync-warning.vis{display:block}
 .conflict-banner{display:none;background:#fff0f0;border:1.5px solid #f5c2c2;border-radius:6px;padding:8px 12px;margin:8px 16px 0;max-width:800px;margin-left:auto;margin-right:auto}
 .conflict-banner.vis{display:block}
 .conflict-banner-title{font-size:0.75rem;font-weight:700;color:var(--red);margin-bottom:4px;display:flex;align-items:center;justify-content:space-between}
@@ -644,6 +648,8 @@ textarea{resize:vertical;min-height:64px}
     </div>
   </div>
   </div>
+  <div class="sync-warning" id="syncWarning">Nicht mit dem Server verbunden — Änderungen sind möglicherweise nicht bei allen sichtbar.</div>
+
   <div class="conflict-banner" id="conflictBanner">
     <div class="conflict-banner-title">
       <span>Terminierungskonflikt</span>
@@ -961,7 +967,7 @@ textarea{resize:vertical;min-height:64px}
     </button>
     <button class="nav-picker-btn" data-action="navPickerOpen" data-app="google">
       <div class="nav-picker-btn-icon" style="background:#e8f4fd">
-        <img src="https://www.google.com/favicon.ico" style="width:22px;height:22px;border-radius:4px" onerror="this.replaceWith(document.createTextNode('G'))">
+        <img id="gmapsIcon" src="https://www.google.com/favicon.ico" style="width:22px;height:22px;border-radius:4px" alt="G">
       </div>
       <span>Google Maps</span>
     </button>
@@ -998,25 +1004,8 @@ textarea{resize:vertical;min-height:64px}
   </div>
 </div>
 
+<!-- Die Service-Worker-Registrierung steht in app.js: die CSP erlaubt kein
+     Inline-Skript, die Registrierung lief hier also nie. -->
 <script src="app.js"></script>
-<script>
-if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('/sw.js').then(reg=>{
-    // Beim Zurückkehren in die App auf Updates prüfen
-    document.addEventListener('visibilitychange',()=>{
-      if(!document.hidden) reg.update();
-    });
-    // Neue Version gefunden → automatisch neu laden
-    reg.addEventListener('updatefound',()=>{
-      const sw=reg.installing;
-      sw.addEventListener('statechange',()=>{
-        if(sw.state==='installed'&&navigator.serviceWorker.controller){
-          window.location.reload();
-        }
-      });
-    });
-  });
-}
-</script>
 </body>
 </html>
