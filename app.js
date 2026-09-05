@@ -20,11 +20,17 @@ let currentUser=null;
 // ── SUPABASE CONFIG ──
 // SUPABASE_KEY is the anon/publishable key — intentionally client-visible (Supabase design).
 // Security model: authentication via Supabase Auth (JWT); data access gated by the session token.
-// RLS is ACTIVE on nous_events. Only authenticated sessions (valid JWT) can read/write.
+// RLS is ACTIVE on nous_event/nous_activity and on the attachments bucket.
 // Unauthenticated requests with the anon key alone are rejected by Supabase.
 const SUPABASE_URL = 'https://uojnjhpvwmgslerallxj.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_sTY9Fhw42eOQ-jSAD_pKNg_a8QhW6Vs';
-const TABLE = 'nous_events';
+// Eine Zeile pro Termin bzw. pro Protokolleintrag statt eines gemeinsamen JSON-Blobs.
+const T_EVENT = 'nous_event';
+const T_ACT   = 'nous_activity';
+const T_ATTMIG = 'nous_attachment_migration';
+// Anhänge liegen im Storage, nicht im Termin-JSON: Base64-Fotos hatten die
+// Termin-Zeile auf 17 MB aufgebläht und damit jeden Sync-Vorgang lahmgelegt.
+const BUCKET = 'attachments';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     persistSession: true,
@@ -267,35 +273,37 @@ const ACT_KEY='nous_activity_v1';
 let activityLog=[];
 function loadActivity(){try{const l=localStorage.getItem(ACT_KEY);if(l)activityLog=JSON.parse(l);}catch(e){console.warn('[nous] Aktivitätslog konnte nicht gelesen werden',e);}}
 function saveActivity(){try{localStorage.setItem(ACT_KEY,JSON.stringify(activityLog.slice(0,200)));}catch(e){console.warn('[nous] Aktivitätslog konnte nicht gespeichert werden (Storage voll?)',e);}}
-function mergeActivity(remote){
-  if(!Array.isArray(remote)) return;
-  const seen=new Set();
-  activityLog=[...activityLog,...remote].filter(a=>{
-    const k=a.ts+'|'+a.type+'|'+a.evTitle;
-    if(seen.has(k)) return false;
-    seen.add(k); return true;
-  }).sort((a,b)=>b.ts.localeCompare(a.ts)).slice(0,200);
+// Das Protokoll liegt als eine Zeile pro Eintrag in nous_activity.
+// Anhängen kollidiert nie, deshalb entfällt das frühere Zusammenführen ganzer Listen.
+function actRowToEntry(r){return{id:r.id,type:r.type,evTitle:r.ev_title,detail:r.detail,ts:r.ts,user:r.actor};}
+function insertActivityEntry(entry){
+  if(!entry||!entry.id||activityLog.some(a=>a.id===entry.id)) return false;
+  activityLog.unshift(entry);
+  activityLog.sort((a,b)=>String(b.ts||'').localeCompare(String(a.ts||'')));
+  activityLog=activityLog.slice(0,200);
   saveActivity();
+  return true;
 }
-async function supabaseSaveActivity(){
-  if(!SUPABASE_URL||!SUPABASE_KEY) return;
-  await sb.from(TABLE).upsert({id:2,data:JSON.stringify(activityLog.slice(0,200)),updated_at:new Date().toISOString()});
-}
-function applyRemoteActivity(raw){
-  try{mergeActivity(typeof raw==='string'?JSON.parse(raw):raw);}catch(e){}
-  try{if(document.getElementById('view-aktuell').classList.contains('active'))renderAktuell();}catch(e){}
-}
-async function reloadActivityFromSupabase(){
-  if(!SUPABASE_URL||!SUPABASE_KEY) return;
-  const{data:rows,error}=await sb.from(TABLE).select('data').eq('id',2).limit(1);
-  if(!error&&rows&&rows.length&&rows[0].data) applyRemoteActivity(rows[0].data);
-}
-function logActivity(type,evTitle,detail){
-  activityLog.unshift({type,evTitle,detail,ts:new Date().toISOString(),user:currentUser||null});
+async function loadActivityFromSupabase(){
+  const{data,error}=await sb.from(T_ACT).select('id,type,ev_title,detail,ts,actor').order('ts',{ascending:false}).limit(200);
+  if(error){reportSyncError('Aktivitäten konnten nicht geladen werden',error,true);return false;}
+  activityLog=(data||[]).map(actRowToEntry);
   saveActivity();
-  supabaseSaveActivity();
+  return true;
 }
-function clearActivity(){if(!confirm('Aktivitätsprotokoll löschen?'))return;activityLog=[];saveActivity();renderActivity();showToast('Protokoll gelöscht');}
+async function logActivity(type,evTitle,detail){
+  const entry={id:'act_'+Date.now()+'_'+Math.random().toString(36).slice(2,8),type,evTitle,detail,ts:new Date().toISOString(),user:currentUser||null};
+  insertActivityEntry(entry);
+  renderActivity();renderAktuellIfActive();
+  const{error}=await sb.from(T_ACT).insert({id:entry.id,type,ev_title:evTitle,detail,ts:entry.ts,actor:currentUser||null});
+  if(error) reportSyncError('Aktivität konnte nicht übertragen werden',error);
+}
+async function clearActivity(){
+  if(!confirm('Aktivitätsprotokoll löschen?'))return;
+  const{error}=await sb.from(T_ACT).delete().neq('id','');
+  if(error){reportSyncError('Protokoll konnte nicht gelöscht werden',error);return;}
+  activityLog=[];saveActivity();renderActivity();renderAktuellIfActive();showToast('Protokoll gelöscht');
+}
 function fmtAbsTime(iso){
   if(!iso)return '';
   const d=new Date(iso);
@@ -357,6 +365,14 @@ function bindStaticHandlers(){
   // File input onchange
   const fi=document.getElementById('fileInput');
   if(fi) fi.addEventListener('change',function(){handleFiles(this);});
+  // Ersatzdarstellung für das Google-Maps-Symbol. Stand als onerror-Attribut im
+  // HTML und wurde von der CSP blockiert, die Ersatzdarstellung kam nie.
+  const gi=document.getElementById('gmapsIcon');
+  if(gi){
+    const fallback=()=>{if(gi.parentNode)gi.replaceWith(document.createTextNode('G'));};
+    gi.addEventListener('error',fallback);
+    if(gi.complete&&gi.naturalWidth===0) fallback();
+  }
 }
 function initApp(user){
   currentUser=detectPerson(user);
@@ -391,6 +407,12 @@ async function signIn(){
 
 async function signOut(){
   appInitialized=false;
+  // Sync-Zustand vollständig zurücksetzen, sonst schreibt eine neue Anmeldung
+  // gegen einen Kanal und einen Cache der vorherigen Sitzung.
+  remoteReady=false;
+  if(syncRetryTimer){clearInterval(syncRetryTimer);syncRetryTimer=null;}
+  if(syncChannel){try{sb.removeChannel(syncChannel);}catch(e){}syncChannel=null;}
+  attUrlCache.clear();
   await sb.auth.signOut();
   currentUser=null;
   events=[];activityLog=[];
@@ -514,61 +536,175 @@ async function lookupFlight(person, dir){
 }
 
 // ── STORAGE ──
-function saveData(){
-  // Strip base64 attachment data from the localStorage cache.
-  // Full attachment content (images/PDFs) is only in Supabase; localStorage is metadata-only.
+// Termine liegen als eine Zeile pro Termin in nous_event. Früher lag der gesamte
+// Bestand in einem einzigen JSON-Blob: wer zuletzt speicherte, schrieb seine
+// komplette Liste zurück und löschte damit die zwischenzeitlich vom anderen
+// angelegten Termine. Zeilenweise Speicherung macht paralleles Arbeiten an
+// verschiedenen Terminen konfliktfrei.
+
+// Vor dem ersten erfolgreichen Laden darf nichts geschrieben werden: der lokale
+// Cache kann veraltet sein und würde neuere Serverstände überschreiben.
+let remoteReady=false;
+let syncRetryTimer=null;
+
+function setSyncState(ok){
+  const el=document.getElementById('syncWarning');
+  if(el) el.classList.toggle('vis',!ok);
+}
+// Sync-Fehler wurden bisher stillschweigend verschluckt — die App meldete
+// „Gespeichert“, obwohl nichts beim anderen ankam. Jetzt werden sie sichtbar.
+// Fehlgeschlagene Hintergrund-Abgleiche zeigen nur das Banner: sie laufen
+// wiederholt, eine Meldung pro Versuch wäre reine Belästigung. Eine vom
+// Nutzer ausgelöste Aktion meldet sich dagegen immer.
+function reportSyncError(msg,err,quiet){
+  console.error('[nous] '+msg,err);
+  if(!quiet) showToast(msg);
+  setSyncState(false);
+}
+function syncGuard(){
+  if(remoteReady) return true;
+  showToast('Synchronisierung läuft noch — bitte einen Moment');
+  return false;
+}
+function renderAktuellIfActive(){
+  try{if(document.getElementById('view-aktuell').classList.contains('active'))renderAktuell();}catch(e){}
+}
+
+// localStorage ist nur ein Anzeige-Cache für den Kaltstart. Anhänge gehören
+// nicht hinein — sie sprengen das Quota, und der Fehler bliebe unbemerkt.
+function slimAttachments(list){
+  return (list||[]).map(a=>{
+    const o={name:a.name,type:a.type};
+    if(a.path)o.path=a.path;
+    if(a.size)o.size=a.size;
+    return o;
+  });
+}
+function cacheEvents(){
   try{
-    const slim=events.map(ev=>ev.attachments&&ev.attachments.length
-      ?Object.assign({},ev,{attachments:ev.attachments.map(a=>({name:a.name,type:a.type}))})
-      :ev);
-    localStorage.setItem(SK,JSON.stringify(slim));
-  }catch(e){console.warn('[nous] Events konnten nicht lokal gespeichert werden',e);}
-  if(SUPABASE_URL&&SUPABASE_KEY) supabaseSave();
+    localStorage.setItem(SK,JSON.stringify(events.map(ev=>Object.assign({},ev,{attachments:slimAttachments(ev.attachments)}))));
+  }catch(e){console.warn('[nous] Events konnten nicht lokal zwischengespeichert werden',e);}
+}
+
+function rowToEvent(r){return Object.assign({},r.data,{id:r.id,updatedAt:r.updated_at});}
+function eventToRow(ev){
+  const data=Object.assign({},ev,{attachments:slimAttachments(ev.attachments)});
+  delete data.updatedAt; // steht als Spalte in der Zeile, gesetzt von der Datenbank
+  return {id:ev.id,data,updated_by:currentUser||null};
+}
+
+function renderEverything(){
   renderAll();
   try{if(document.getElementById('view-calendar').classList.contains('active'))renderCal();}catch(e){console.warn('[nous] renderCal fehlgeschlagen',e);}
-  try{if(document.getElementById('view-aktuell').classList.contains('active'))renderAktuell();}catch(e){console.warn('[nous] renderAktuell fehlgeschlagen',e);}
+  renderAktuellIfActive();
   try{if(document.getElementById('view-todos').classList.contains('active'))renderTodos();}catch(e){console.warn('[nous] renderTodos fehlgeschlagen',e);}
   try{if(document.getElementById('view-invites').classList.contains('active'))renderInvites();}catch(e){console.warn('[nous] renderInvites fehlgeschlagen',e);}
   updateInviteBadge();
+  hydrateAttachmentImages();
+}
+// Lokal zwischenspeichern und neu zeichnen. Das Schreiben zum Server erfolgt
+// bewusst getrennt über persistEvent(), damit Fehler dort auffallen.
+function saveData(){cacheEvents();renderEverything();}
+
+async function persistEvent(ev){
+  if(!remoteReady) return false;
+  const{error}=await sb.from(T_EVENT).upsert(eventToRow(ev));
+  if(error){reportSyncError('Termin konnte nicht gespeichert werden',error);return false;}
+  setSyncState(true);
+  return true;
+}
+// Weiches Löschen: die Zeile bleibt mit deleted=true stehen, damit das Löschen
+// auch Geräte erreicht, die zwischenzeitlich offline waren.
+async function persistEventDeleted(id){
+  if(!remoteReady) return false;
+  const{error}=await sb.from(T_EVENT).update({deleted:true,updated_by:currentUser||null}).eq('id',id);
+  if(error){reportSyncError('Termin konnte nicht gelöscht werden',error);return false;}
+  setSyncState(true);
+  return true;
 }
 
-async function supabaseSave(){
-  const {error}=await sb.from(TABLE).upsert({id:1,data:JSON.stringify(events),updated_at:new Date().toISOString()});
-  if(error) console.error('[Supabase] Save-Fehler:',error);
-  else console.log('[Supabase] OK');
+async function loadEventsFromSupabase(){
+  const{data,error}=await sb.from(T_EVENT).select('id,data,updated_at,deleted');
+  if(error){reportSyncError('Termine konnten nicht geladen werden',error,true);return false;}
+  events=(data||[]).filter(r=>!r.deleted).map(rowToEvent);
+  cacheEvents();
+  return true;
 }
 
-function applyRemoteData(raw){
-  try{
-    const remote=typeof raw==='string'?JSON.parse(raw):raw;
-    if(!Array.isArray(remote))return false;
-    events=remote;
-    try{localStorage.setItem(SK,JSON.stringify(remote));}catch(e){}
-    renderAll();renderCal();renderAktuell();
-    try{if(document.getElementById('view-todos').classList.contains('active'))renderTodos();}catch(e){}
-    try{if(document.getElementById('view-invites').classList.contains('active'))renderInvites();}catch(e){}
-    updateInviteBadge();
-    return true;
-  }catch(e){console.error('[nous] Remote-Daten ungültig',e);return false;}
+// Der Server ist die Wahrheit: eingehende Zeilen werden unverändert übernommen.
+function applyEventRow(r){
+  const i=events.findIndex(e=>e.id===r.id);
+  if(r.deleted){if(i<0)return false;events.splice(i,1);return true;}
+  const ev=rowToEvent(r);
+  if(i<0)events.push(ev);else events[i]=ev;
+  return true;
+}
+function removeEventRow(id){
+  const i=id?events.findIndex(e=>e.id===id):-1;
+  if(i<0) return false;
+  events.splice(i,1);
+  return true;
 }
 
 async function reloadFromSupabase(){
-  const{data:rows,error}=await sb.from(TABLE).select('data').eq('id',1).limit(1);
-  if(!error&&rows&&rows.length&&rows[0].data) applyRemoteData(rows[0].data);
+  const ok=await loadEventsFromSupabase();
+  if(ok){setSyncState(true);renderEverything();}
+  return ok;
+}
+async function reloadActivityFromSupabase(){
+  const ok=await loadActivityFromSupabase();
+  if(ok){renderActivity();renderAktuellIfActive();}
+  return ok;
+}
+
+// Solange der erste Ladeversuch scheitert, bleibt die App schreibgesperrt.
+// Ohne Wiederholung bliebe sie das bis zum nächsten Neustart.
+function scheduleSyncRetry(){
+  if(syncRetryTimer) return;
+  syncRetryTimer=setInterval(async()=>{
+    if(!await loadEventsFromSupabase()) return;
+    clearInterval(syncRetryTimer);syncRetryTimer=null;
+    remoteReady=true;setSyncState(true);renderEverything();
+    await reloadActivityFromSupabase();
+    migrateLegacyAttachments();
+  },15000);
+}
+
+let syncChannel=null;
+function subscribeRealtime(){
+  if(syncChannel){try{sb.removeChannel(syncChannel);}catch(e){}syncChannel=null;}
+  // Realtime muss das Zugriffstoken der Sitzung kennen, sonst filtert RLS alles weg.
+  try{Promise.resolve(sb.realtime.setAuth()).catch(e=>console.warn('[nous] Realtime-Auth',e));}
+  catch(e){console.warn('[nous] Realtime-Auth',e);}
+  syncChannel=sb.channel('nous-sync')
+    .on('postgres_changes',{event:'*',schema:'public',table:T_EVENT},payload=>{
+      let changed=false;
+      if(payload.eventType==='DELETE') changed=removeEventRow(payload.old&&payload.old.id);
+      else if(payload.new&&payload.new.id) changed=applyEventRow(payload.new);
+      if(changed){cacheEvents();renderEverything();}
+    })
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:T_ACT},payload=>{
+      if(payload.new&&insertActivityEntry(actRowToEntry(payload.new))){renderActivity();renderAktuellIfActive();}
+    })
+    .subscribe(status=>{
+      console.log('[Supabase] Realtime:',status);
+      // Nach (Wieder-)Verbinden vollständig nachladen: während der Unterbrechung
+      // gesendete Änderungen werden nicht nachgeliefert.
+      if(status==='SUBSCRIBED'&&remoteReady){reloadFromSupabase();reloadActivityFromSupabase();}
+      if(status==='CHANNEL_ERROR'||status==='TIMED_OUT') setSyncState(false);
+    });
 }
 
 async function loadData(){
   try{const l=localStorage.getItem(SK);if(l)events=JSON.parse(l);}catch(e){console.warn('[nous] localStorage Fehler',e);}
   renderAll();renderCal();renderAktuell();updateInviteBadge();
-  await Promise.all([reloadFromSupabase(),reloadActivityFromSupabase()]);
-  // Echtzeit-Sync für Events (id=1) und Aktivitätslog (id=2)
-  sb.channel('nous-sync')
-    .on('postgres_changes',{event:'UPDATE',schema:'public',table:TABLE},payload=>{
-      if(!payload.new) return;
-      if(payload.new.id===1&&payload.new.data) applyRemoteData(payload.new.data);
-      else if(payload.new.id===2&&payload.new.data) applyRemoteActivity(payload.new.data);
-    })
-    .subscribe(status=>console.log('[Supabase] Realtime:',status));
+  const[evOk]=await Promise.all([loadEventsFromSupabase(),loadActivityFromSupabase()]);
+  remoteReady=evOk;
+  setSyncState(evOk);
+  renderEverything();renderActivity();
+  subscribeRealtime();
+  if(evOk) migrateLegacyAttachments();
+  else scheduleSyncRetry();
 }
 
 // Beim Zurückkehren in den Tab neu laden (z.B. nach Gerätewechsel)
@@ -1499,7 +1635,7 @@ function renderCard(e){
         <span class="card-section-arrow">▾</span>
       </div>
       <div class="card-section-body">
-        <div class="att-row">${e.attachments.map(a=>a.type&&a.type.startsWith('image/')?`<div class="att-thumb"><img src="${safeDataImg(a.data)}"></div>`:`<div class="att-thumb">📄</div>`).join('')}</div>
+        <div class="att-row">${e.attachments.map(a=>a.type&&a.type.startsWith('image/')?`<div class="att-thumb">${attImgTag(a,'')}</div>`:`<div class="att-thumb">📄</div>`).join('')}</div>
       </div>
     </div>`;
   }
@@ -1537,7 +1673,8 @@ function renderCard(e){
 }
 
 // TOGGLE TODO IN CARD
-function toggleTodo(evId,todoId){
+async function toggleTodo(evId,todoId){
+  if(!syncGuard()) return;
   const ev=events.find(e=>e.id===evId);if(!ev)return;
   let todo=(ev.todos||[]).find(t=>t.id===todoId);
   if(!todo){
@@ -1548,8 +1685,11 @@ function toggleTodo(evId,todoId){
   }
   if(!todo) return;
   todo.done=!todo.done;
-  logActivity('todo',ev.title,`To-do ${todo.done?'erledigt':'wieder geöffnet'}: „${todo.text}"`);
   saveData();
+  // Erst übertragen, dann protokollieren: sonst meldet das Protokoll eine
+  // Änderung, die beim anderen nie angekommen ist.
+  if(!await persistEvent(ev)){await reloadFromSupabase();return;}
+  logActivity('todo',ev.title,`To-do ${todo.done?'erledigt':'wieder geöffnet'}: „${todo.text}"`);
 }
 
 // CALENDAR
@@ -1659,6 +1799,7 @@ function showCalDay(ds){
   const holNote=hol?`<div class="cal-day-holiday hol-${hol.states||'nat'}">${esc(hol.name)}${hol.states==='BY'?' <small>(nur Bayern)</small>':hol.states==='HE'?' <small>(nur Hessen)</small>':hol.states==='BYHE'?' <small>(Bayern · Hessen)</small>':''}</div>`:'';
   if(!de.length){c.innerHTML=hol?`<div class="cal-day-title">${fmtD(ds)}</div>${holNote}`:'';return;}
   c.innerHTML=`<div class="cal-day-title">${fmtD(ds)}</div>${holNote}`+de.map(e=>renderCard(e)).join('');
+  hydrateAttachmentImages();
 }
 
 // INVITATIONS
@@ -1744,7 +1885,8 @@ function openInvites(){
   renderInvites();
 }
 
-function acceptInvite(id){
+async function acceptInvite(id){
+  if(!syncGuard()) return;
   const ev=events.find(e=>e.id===id);
   if(!ev||!ev.invite) return;
   ev.invite.status='accepted';
@@ -1756,19 +1898,22 @@ function acceptInvite(id){
     ev.owner='gemeinsam';
     ev.status=prevStatus;
   }
-  logActivity('edit',ev.title,`Einladung angenommen – Termin jetzt Gemeinsam`);
   saveData();
+  if(!await persistEvent(ev)){await reloadFromSupabase();return;}
+  logActivity('edit',ev.title,`Einladung angenommen – Termin jetzt Gemeinsam`);
   showToast('Einladung angenommen');
   renderInvites();
   updateInviteBadge();
 }
 
-function declineInvite(id){
+async function declineInvite(id){
+  if(!syncGuard()) return;
   const ev=events.find(e=>e.id===id);
   if(!ev||!ev.invite) return;
   ev.invite.status='declined';
-  logActivity('edit',ev.title,'Einladung abgelehnt');
   saveData();
+  if(!await persistEvent(ev)){await reloadFromSupabase();return;}
+  logActivity('edit',ev.title,'Einladung abgelehnt');
   showToast('Einladung abgelehnt');
   renderInvites();
   updateInviteBadge();
@@ -2048,20 +2193,150 @@ function safeDataPdf(data){
   return typeof data==='string'&&/^data:application\/pdf;base64,/.test(data)?data:'';
 }
 
+// ── ANHÄNGE IM STORAGE ──
+// Anhänge werden als Datei im privaten Bucket abgelegt; im Termin steht nur
+// noch {name, type, path, size}. Der Bucket ist privat, Bilder werden deshalb
+// über kurzlebige signierte URLs geladen und diese im Speicher zwischengehalten.
+const ATT_PIXEL='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+const attUrlCache=new Map();
+
+function dataUriToBytes(dataUri){
+  const b64=String(dataUri||'').split(',')[1];
+  if(!b64) return null;
+  const raw=atob(b64);
+  const bytes=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++) bytes[i]=raw.charCodeAt(i);
+  return bytes;
+}
+
+async function attSignedUrls(paths){
+  const wanted=[...new Set((paths||[]).filter(Boolean))];
+  const now=Date.now();
+  const missing=wanted.filter(p=>{const c=attUrlCache.get(p);return !c||c.exp<now;});
+  if(missing.length){
+    const{data,error}=await sb.storage.from(BUCKET).createSignedUrls(missing,3600);
+    if(error) console.warn('[nous] Signierte URLs fehlgeschlagen',error);
+    else (data||[]).forEach(d=>{
+      if(d&&d.signedUrl&&!d.error) attUrlCache.set(d.path,{url:d.signedUrl,exp:now+50*60*1000});
+    });
+  }
+  const out={};
+  wanted.forEach(p=>{const c=attUrlCache.get(p);if(c)out[p]=c.url;});
+  return out;
+}
+
+// Bild-Tags werden zunächst mit einem Platzhalter gerendert und die signierte
+// URL danach nachgereicht — signieren ist asynchron, Rendern ist es nicht.
+function attImgTag(a,attrs){
+  if(a&&a.data) return `<img src="${safeDataImg(a.data)}" ${attrs}>`;
+  if(a&&a.path) return `<img src="${ATT_PIXEL}" data-att-path="${esc(a.path)}" ${attrs}>`;
+  return `<img src="${ATT_PIXEL}" ${attrs}>`;
+}
+async function hydrateAttachmentImages(){
+  const els=[...document.querySelectorAll('img[data-att-path]')];
+  if(!els.length) return;
+  const map=await attSignedUrls(els.map(el=>el.dataset.attPath));
+  els.forEach(el=>{
+    const url=map[el.dataset.attPath];
+    if(url){el.src=url;el.removeAttribute('data-att-path');}
+  });
+}
+
+// Fotos aus dem Telefon sind mehrere Megabyte groß. Ohne Verkleinerung wächst
+// der Bestand wieder so weit, dass jeder Abgleich unbrauchbar langsam wird.
+const ATT_MAX_EDGE=2000, ATT_QUALITY=0.82, ATT_COMPRESS_ABOVE=900*1024;
+async function compressImage(file){
+  if(!file.type.startsWith('image/')||file.type==='image/gif') return file;
+  try{
+    const bmp=await createImageBitmap(file);
+    const scale=Math.min(1,ATT_MAX_EDGE/Math.max(bmp.width,bmp.height));
+    if(scale===1&&file.size<=ATT_COMPRESS_ABOVE){bmp.close&&bmp.close();return file;}
+    const w=Math.round(bmp.width*scale),h=Math.round(bmp.height*scale);
+    const c=document.createElement('canvas');c.width=w;c.height=h;
+    c.getContext('2d').drawImage(bmp,0,0,w,h);
+    bmp.close&&bmp.close();
+    const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',ATT_QUALITY));
+    if(!blob||blob.size>=file.size) return file;
+    return new File([blob],String(file.name||'bild').replace(/\.[^.]+$/,'')+'.jpg',{type:'image/jpeg'});
+  }catch(e){console.warn('[nous] Bildkomprimierung übersprungen',e);return file;}
+}
+
+async function uploadAttachment(evId,a){
+  const bytes=dataUriToBytes(a.data);
+  if(!bytes) throw new Error('Anhang ohne Inhalt: '+(a.name||''));
+  const ext=(String(a.type||'').split('/')[1]||'bin').replace('jpeg','jpg');
+  const path=`${evId}/${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
+  const{error}=await sb.storage.from(BUCKET).upload(path,new Blob([bytes],{type:a.type}),{contentType:a.type,upsert:false});
+  if(error) throw error;
+  return {name:a.name,type:a.type,path,size:bytes.length};
+}
+async function uploadPendingAttachments(evId,list){
+  const out=[];
+  for(const a of (list||[])){
+    if(a.path||!a.data){
+      const kept={name:a.name,type:a.type};
+      if(a.path)kept.path=a.path;
+      if(a.size)kept.size=a.size;
+      out.push(kept);
+    } else out.push(await uploadAttachment(evId,a));
+  }
+  return out;
+}
+// Beim Entfernen eines Anhangs auch die Datei löschen, sonst bleiben Dateileichen zurück.
+async function deleteRemovedAttachments(existing,next){
+  const before=((existing&&existing.attachments)||[]).map(a=>a.path).filter(Boolean);
+  if(!before.length) return;
+  const after=new Set((next||[]).map(a=>a.path).filter(Boolean));
+  const gone=before.filter(p=>!after.has(p));
+  if(!gone.length) return;
+  const{error}=await sb.storage.from(BUCKET).remove(gone);
+  if(error) console.warn('[nous] Verwaiste Anhänge nicht entfernt',error);
+}
+
+// Einmalige Übernahme der Altbestände: die Base64-Anhänge liegen in einer
+// Staging-Tabelle und wandern von dort in den Storage. claimed_at verhindert,
+// dass beide Geräte dieselbe Datei gleichzeitig hochladen.
+async function migrateLegacyAttachments(){
+  try{
+    const{data:rows,error}=await sb.from(T_ATTMIG).select('event_id,claimed_at');
+    if(error||!rows||!rows.length) return;
+    const cutoff=new Date(Date.now()-10*60*1000).toISOString();
+    for(const row of rows){
+      if(row.claimed_at&&row.claimed_at>cutoff) continue;
+      const{data:claim}=await sb.from(T_ATTMIG).update({claimed_at:new Date().toISOString()})
+        .eq('event_id',row.event_id).or(`claimed_at.is.null,claimed_at.lt."${cutoff}"`).select('event_id');
+      if(!claim||!claim.length) continue;
+      try{
+        const{data:full,error:loadErr}=await sb.from(T_ATTMIG).select('attachments').eq('event_id',row.event_id).single();
+        if(loadErr) throw loadErr;
+        const uploaded=await uploadPendingAttachments(row.event_id,(full&&full.attachments)||[]);
+        const ev=events.find(e=>e.id===row.event_id);
+        if(ev){
+          ev.attachments=uploaded;
+          if(!await persistEvent(ev)) throw new Error('Termin konnte nach Anhang-Übernahme nicht gespeichert werden');
+        }
+        await sb.from(T_ATTMIG).delete().eq('event_id',row.event_id);
+        saveData();
+        showToast('Anhänge übernommen');
+      }catch(e){
+        console.error('[nous] Anhang-Übernahme fehlgeschlagen',e);
+        await sb.from(T_ATTMIG).update({claimed_at:null}).eq('event_id',row.event_id);
+      }
+    }
+  }catch(e){console.error('[nous] Anhang-Übernahme fehlgeschlagen',e);}
+}
+
 // ATTACHMENT LIGHTBOX
 // Open a full-size preview when an attachment in the preview modal is tapped.
 // Images are shown inline; PDFs open in a new tab via a blob URL (the strict
 // CSP forbids framing data:/blob: URLs, so we can't embed them in-page).
 let attBlobUrl=null;
 function dataUriToBlobUrl(dataUri,mime){
-  const b64=dataUri.split(',')[1];if(!b64)return null;
-  const raw=atob(b64);
-  const bytes=new Uint8Array(raw.length);
-  for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
-  return URL.createObjectURL(new Blob([bytes],{type:mime}));
+  const bytes=dataUriToBytes(dataUri);
+  return bytes?URL.createObjectURL(new Blob([bytes],{type:mime})):null;
 }
 function revokeAttBlob(){if(attBlobUrl){URL.revokeObjectURL(attBlobUrl);attBlobUrl=null;}}
-function openAttPreview(evId,idx){
+async function openAttPreview(evId,idx){
   const ev=events.find(e=>e.id===evId);if(!ev||!ev.attachments)return;
   const a=ev.attachments[parseInt(idx,10)];if(!a)return;
   const content=document.getElementById('attLightboxContent');
@@ -2069,18 +2344,27 @@ function openAttPreview(evId,idx){
   if(!content)return;
   revokeAttBlob();
   nameEl.textContent=a.name||'';
-  if(a.type&&a.type.startsWith('image/')){
-    const src=safeDataImg(a.data);
-    if(!src){showToast('Vorschau nicht verfügbar');return;}
-    content.innerHTML=`<img src="${src}" alt="${esc(a.name||'')}">`;
+  const isImg=!!(a.type&&a.type.startsWith('image/'));
+  // Anhänge aus dem Storage: signierte URL. Noch nicht hochgeladene Anhänge im
+  // offenen Formular liegen weiterhin als Data-URI vor.
+  let url='';
+  if(a.path){
+    const m=await attSignedUrls([a.path]);
+    url=m[a.path]||'';
+  }else if(a.data){
+    if(isImg) url=safeDataImg(a.data);
+    else{
+      const src=safeDataPdf(a.data);
+      if(src){attBlobUrl=dataUriToBlobUrl(src,'application/pdf');url=attBlobUrl||'';}
+    }
+  }
+  if(!url){showToast('Vorschau nicht verfügbar');return;}
+  if(isImg){
+    content.innerHTML=`<img src="${esc(url)}" alt="${esc(a.name||'')}">`;
   }else if(a.type==='application/pdf'){
-    const src=safeDataPdf(a.data);
-    if(!src){showToast('Vorschau nicht verfügbar');return;}
-    attBlobUrl=dataUriToBlobUrl(src,'application/pdf');
-    if(!attBlobUrl){showToast('Vorschau nicht verfügbar');return;}
     content.innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;gap:14px;color:#fff">
       <div style="font-size:3.5rem">📄</div>
-      <a class="att-lightbox-dl" href="${attBlobUrl}" target="_blank" rel="noopener noreferrer">PDF in neuem Tab öffnen</a>
+      <a class="att-lightbox-dl" href="${esc(url)}" target="_blank" rel="noopener noreferrer">PDF in neuem Tab öffnen</a>
     </div>`;
   }else{
     showToast('Vorschau nicht verfügbar');return;
@@ -2113,29 +2397,33 @@ function checkMagicB64(dataURI,type){
 
 // SVG excluded: SVG data-URIs can carry inline scripts and execute in some img contexts
 const ALLOWED_UPLOAD_MIME=new Set(['image/jpeg','image/png','image/gif','image/webp','application/pdf']);
+const MAX_UPLOAD_IMAGE=25*1024*1024, MAX_UPLOAD_FILE=5*1024*1024;
 function validateFile(file){
-  if(file.size>5*1024*1024){showToast('Max. 5 MB pro Datei');return false;}
   if(!ALLOWED_UPLOAD_MIME.has(file.type)){showToast(`Dateityp nicht erlaubt: ${file.type||'unbekannt'}`);return false;}
+  // Bilder werden vor dem Upload verkleinert, das Rohmaterial darf grösser sein.
+  const max=file.type.startsWith('image/')?MAX_UPLOAD_IMAGE:MAX_UPLOAD_FILE;
+  if(file.size>max){showToast(`Max. ${Math.round(max/1048576)} MB pro Datei`);return false;}
   return true;
 }
-async function handleFiles(input){
-  for(const file of Array.from(input.files)){
-    if(!validateFile(file)) continue;
-    const data=await toB64(file);
-    if(!checkMagicB64(data,file.type)){showToast(`Dateiformat ungültig: ${file.type}`);continue;}
-    pendingAtt.push({name:file.name,type:file.type,data});
-  }renderAttList();
-}
-async function addFileObjects(files){
+// Bilder werden vor der Aufnahme verkleinert. Die Magic-Byte-Prüfung läuft
+// gegen die komprimierte Fassung, die dann auch hochgeladen wird.
+async function addAttachmentFiles(files){
   let added=0;
-  for(const file of Array.from(files)){
-    if(!validateFile(file)) continue;
+  for(const original of Array.from(files||[])){
+    if(!validateFile(original)) continue;
+    const file=await compressImage(original);
     const data=await toB64(file);
     if(!checkMagicB64(data,file.type)){showToast(`Dateiformat ungültig: ${file.type}`);continue;}
     pendingAtt.push({name:file.name||('bild_'+Date.now()+'.png'),type:file.type,data});
     added++;
   }
-  if(added>0){renderAttList();showToast(`${added} Datei${added>1?'en':''} hinzugefügt`);}
+  if(added>0) renderAttList();
+  return added;
+}
+async function handleFiles(input){await addAttachmentFiles(input.files);}
+async function addFileObjects(files){
+  const added=await addAttachmentFiles(files);
+  if(added>0) showToast(`${added} Datei${added>1?'en':''} hinzugefügt`);
 }
 function handleDragOver(e){e.preventDefault();e.stopPropagation();document.getElementById('fileDropArea').classList.add('drag-over');}
 function handleDragLeave(e){e.preventDefault();document.getElementById('fileDropArea').classList.remove('drag-over');}
@@ -2162,16 +2450,19 @@ document.addEventListener('paste',function(e){
 });
 function toB64(f){return new Promise(r=>{const fr=new FileReader();fr.onload=e=>r(e.target.result);fr.readAsDataURL(f);});}
 function renderAttList(){
-  document.getElementById('attList').innerHTML=pendingAtt.map((a,i)=>{
+  const list=document.getElementById('attList');
+  if(!list) return;
+  list.innerHTML=pendingAtt.map((a,i)=>{
     const isImg=a.type&&a.type.startsWith('image/');
     return `<div class="att-item" style="${isImg?'flex-direction:column;align-items:flex-start;padding:6px 8px;gap:4px':''}">
-      ${isImg?`<img src="${safeDataImg(a.data)}" style="width:100%;max-width:160px;max-height:100px;object-fit:cover;border-radius:3px;border:1px solid var(--border)">`:'📄'}
+      ${isImg?attImgTag(a,'style="width:100%;max-width:160px;max-height:100px;object-fit:cover;border-radius:3px;border:1px solid var(--border)"'):'📄'}
       <div style="display:flex;align-items:center;gap:5px;width:100%">
         <span style="flex:1;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.72rem">${esc(a.name)}</span>
         <span class="att-rm" data-action="removeAtt" data-idx="${i}">✕</span>
       </div>
     </div>`;
   }).join('');
+  hydrateAttachmentImages();
 }
 
 // TRANSPORT LEGS
@@ -2381,15 +2672,30 @@ function collectTransport(){
 }
 
 // SAVE
-function saveEvent(){
+function releaseSaveBtn(btn){if(btn){btn.disabled=false;btn.textContent='Speichern';}}
+async function saveEvent(){
   const title=document.getElementById('f_title').value.trim();
   if(!title){showToast('Bitte Titel eingeben');return;}
+  if(!syncGuard()) return;
   const dateFrom=document.getElementById('f_dateFrom').value;
   const dateTo=document.getElementById('f_dateTo').value;
   const isM=!!(dateTo&&dateTo>dateFrom);
   const existing=editId?events.find(e=>e.id===editId):null;
+  const wasEdit=!!editId;
+  const evId=editId||genId();
+  const saveBtn=document.querySelector('#eventModal [data-action="saveEvent"]');
+  if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='Speichern …';}
+  // Anhänge zuerst in den Storage laden; im Termin steht nur noch die Referenz.
+  let attachments;
+  try{
+    attachments=await uploadPendingAttachments(evId,pendingAtt);
+  }catch(err){
+    releaseSaveBtn(saveBtn);
+    reportSyncError('Anhänge konnten nicht hochgeladen werden',err);
+    return;
+  }
   const ev={
-    id:editId||genId(),uid:(existing&&existing.uid)||genUid(),
+    id:evId,uid:(existing&&existing.uid)||genUid(),
     sequence:existing?((existing.sequence||0)+1):0,
     title,
     ...((()=>{
@@ -2410,7 +2716,7 @@ function saveEvent(){
     transport:collectTransport(),
     todos:collectTodos('todosContainer'),
     accommodations:collectAccoms(),
-    attachments:pendingAtt,
+    attachments,
     subevents:collectSubs(),
     updatedAt:new Date().toISOString()
   };
@@ -2433,7 +2739,15 @@ function saveEvent(){
   } else {
     ev.invite=null;
   }
-  if(editId){
+  // Erst zum Server schreiben. Scheitert das, bleibt das Formular offen und die
+  // Eingabe erhalten — bisher meldete die App Erfolg, auch wenn nichts ankam.
+  const ok=await persistEvent(ev);
+  releaseSaveBtn(saveBtn);
+  if(!ok) return;
+  await deleteRemovedAttachments(existing,attachments);
+
+  let detail;
+  if(wasEdit){
     // Build changelog entry: what changed?
     const changes=[];
     if(existing){
@@ -2445,16 +2759,18 @@ function saveEvent(){
       if(JSON.stringify(existing.todos)!==JSON.stringify(ev.todos)) changes.push('To-dos geändert');
       if(JSON.stringify(existing.subevents)!==JSON.stringify(ev.subevents)) changes.push('Subevents geändert');
     }
-    events=events.map(e=>e.id===editId?ev:e);
-    logActivity('edit',ev.title,changes.length?changes.join(' · '):'Details aktualisiert');
+    detail=changes.length?changes.join(' · '):'Details aktualisiert';
   } else {
-    events.push(ev);
     const dateStr=ev.multiday?`${fmtD(ev.dateFrom)} – ${fmtD(ev.dateTo)}`:fmtD(ev.date);
-    logActivity('create',ev.title,`Neuer Termin · ${dateStr} · ${SL[ev.status]||ev.status}`);
+    detail=`Neuer Termin · ${dateStr} · ${SL[ev.status]||ev.status}`;
   }
+  // Der Realtime-Rücklauf des eigenen Schreibvorgangs kann schneller sein als
+  // dieser Code. Deshalb ersetzen statt anhängen, sonst entsteht ein Duplikat.
+  const idx=events.findIndex(e=>e.id===evId);
+  if(idx<0) events.push(ev); else events[idx]=ev;
   saveData();closeModal('eventModal');
-  showToast(editId?'Termin aktualisiert':'Termin gespeichert');
-
+  showToast(wasEdit?'Termin aktualisiert':'Termin gespeichert');
+  logActivity(wasEdit?'edit':'create',ev.title,detail);
 }
 
 // DELETE
@@ -2466,15 +2782,20 @@ function delEvent(id){
   document.getElementById('confirmDialogSub').textContent='Diese Aktion kann nicht rückgängig gemacht werden.';
   document.getElementById('confirmOverlay').classList.add('open');
 }
-function confirmDialogOk(){
+async function confirmDialogOk(){
   const id=_pendingDeleteId;  // save before closing clears it
   closeConfirmDialog();
   if(!id)return;
+  if(!syncGuard()) return;
   const ev=events.find(e=>e.id===id);
-  if(ev) logActivity('delete',ev.title,`Termin gelöscht · ${ev.multiday?fmtD(ev.dateFrom):fmtD(ev.date)}`);
+  const delTitle=ev?ev.title:'';
+  const delDate=ev?(ev.multiday?fmtD(ev.dateFrom):fmtD(ev.date)):'';
   events=events.filter(e=>e.id!==id);
   closeModal('eventModal');closeModal('previewModal');
-  saveData();showToast('Termin gelöscht');
+  saveData();
+  if(!await persistEventDeleted(id)){await reloadFromSupabase();return;}
+  logActivity('delete',delTitle,`Termin gelöscht · ${delDate}`);
+  showToast('Termin gelöscht');
 }
 function closeConfirmDialog(){
   document.getElementById('confirmOverlay').classList.remove('open');
@@ -2592,12 +2913,13 @@ function openPreview(id){
   if(ev.attachments&&ev.attachments.length){
     html+=`<div class="pv-block"><div class="pv-block-title">Anhänge</div><div style="display:flex;flex-wrap:wrap;gap:6px">`+
       ev.attachments.map((a,i)=>a.type&&a.type.startsWith('image/')?
-        `<img class="pv-att" data-action="openAttPreview" data-ev-id="${id}" data-att-idx="${i}" src="${safeDataImg(a.data)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" title="${esc(a.name||'')}">`
+        attImgTag(a,`class="pv-att" data-action="openAttPreview" data-ev-id="${id}" data-att-idx="${i}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" title="${esc(a.name||'')}"`)
         :`<div class="pv-att" data-action="openAttPreview" data-ev-id="${id}" data-att-idx="${i}" style="width:60px;height:60px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:1.3rem" title="${esc(a.name||'')}">📄<span style="font-size:0.5rem;color:var(--text2);max-width:54px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 3px">${esc(a.name||'')}</span></div>`
       ).join('')+`</div></div>`;
   }
 
   document.getElementById('pvBody').innerHTML=html;
+  hydrateAttachmentImages();
   const hasMap=(ev.lat&&ev.lon)||(ev.accommodations&&ev.accommodations.some(a=>a.lat))||(ev.subevents&&ev.subevents.some(s=>s.lat));
   const pvMapBtn=document.getElementById('pvMapBtn');
   if(pvMapBtn){pvMapBtn.style.display=hasMap?'':'none';if(hasMap)pvMapBtn.dataset.evId=id;}
@@ -2752,3 +3074,24 @@ document.addEventListener('keydown', e=>{
   if(t.dataset.action==='flightKeydown'&&e.key==='Enter')
     lookupFlightLeg(t.dataset.lid);
 });
+
+// ── SERVICE WORKER ──
+// Stand bisher als Inline-Skript in index.html und wurde dort von der CSP
+// blockiert — die automatische Aktualisierung lief deshalb nie an.
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('/sw.js').then(reg=>{
+      document.addEventListener('visibilitychange',()=>{
+        if(!document.hidden) reg.update();
+      });
+      reg.addEventListener('updatefound',()=>{
+        const sw=reg.installing;
+        if(!sw) return;
+        sw.addEventListener('statechange',()=>{
+          // Neue Version aktiv: neu laden, damit beide Geräte denselben Code fahren.
+          if(sw.state==='installed'&&navigator.serviceWorker.controller) window.location.reload();
+        });
+      });
+    }).catch(e=>console.warn('[nous] Service Worker nicht registriert',e));
+  });
+}
