@@ -473,6 +473,11 @@ textarea{resize:vertical;min-height:64px}
 .exp-row-main{flex:1 1 auto;min-width:0}
 .exp-row-meta{font-size:0.68rem;color:var(--text3);margin-top:1px}
 .exp-row-amount{font-weight:700;color:var(--text);margin-left:auto;white-space:nowrap;flex-shrink:0}
+.pay-row{display:flex;align-items:center;gap:10px;font-size:0.8rem;padding:7px 0;border-bottom:1px solid var(--border)}
+.pay-row:last-child{border-bottom:none}
+.pay-dir{font-weight:700}
+.exp-filter{display:flex;gap:6px;margin-bottom:8px}
+.exp-settled-note{font-size:0.62rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em}
 .exp-group{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px}
 .exp-group-title{font-size:0.8rem;font-weight:700;margin-bottom:2px;cursor:pointer}
 .exp-group-sub{font-size:0.68rem;color:var(--text3);margin-bottom:6px}
@@ -756,6 +761,34 @@ textarea{resize:vertical;min-height:64px}
     <div class="confirm-dialog-btns">
       <button class="btn-secondary" data-action="closeConfirmDialog">Abbrechen</button>
       <button class="btn-danger" id="confirmDialogOk" data-action="confirmDialogOk">Löschen</button>
+    </div>
+  </div>
+</div>
+
+<!-- ZAHLUNG -->
+<div class="modal-overlay" id="paymentModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-header">
+      <div class="modal-title">Zahlung erfassen</div>
+      <div class="modal-close" data-action="closeModal" data-modal="paymentModal">✕</div>
+    </div>
+    <div class="modal-body">
+      <div class="form-group"><label>Richtung *</label>
+        <select id="p_from">
+          <option value="johann">Johann zahlt an Toja</option>
+          <option value="toja">Toja zahlt an Johann</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Betrag (€) *</label><input type="text" id="p_amount" inputmode="decimal" placeholder="0,00"></div>
+        <div class="form-group"><label>Datum</label><input type="date" id="p_date"></div>
+      </div>
+      <div id="p_hint" style="font-size:0.74rem;color:var(--text3)"></div>
+      <div class="form-group"><label>Notiz</label><input type="text" id="p_note" placeholder="z.B. Überweisung, bar"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" data-action="closeModal" data-modal="paymentModal">Abbrechen</button>
+      <button class="btn-primary" data-action="savePayment">Speichern</button>
     </div>
   </div>
 </div>

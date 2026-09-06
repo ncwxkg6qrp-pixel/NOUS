@@ -31,6 +31,12 @@ const T_ATTMIG = 'nous_attachment_migration';
 // Anhänge liegen im Storage, nicht im Termin-JSON: Base64-Fotos hatten die
 // Termin-Zeile auf 17 MB aufgebläht und damit jeden Sync-Vorgang lahmgelegt.
 const BUCKET = 'attachments';
+// Zahlungen gehören zu keinem Termin. Sie liegen deshalb in einer
+// reservierten Zeile derselben Tabelle statt in einer eigenen — eine neue
+// Tabelle hätte eine Migration samt RLS-Regeln auf der laufenden Datenbank
+// verlangt. Die Zeile wird beim Laden herausgefiltert und erreicht die
+// Terminlisten nie.
+const LEDGER_ID = '__ledger__';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     persistSession: true,
@@ -47,7 +53,7 @@ const SCB={blocker:'s-blocker',save:'s-save',zugesagt:'s-zugesagt',teilweise:'s-
 const OL={gemeinsam:'Gemeinsam',toja:'Toja',johann:'Johann'};
 const OC={gemeinsam:'ob-gemeinsam',toja:'ob-toja',johann:'ob-johann'};
 const PERSONS=['toja','johann'], DIRS=['an','ab'];
-let events=[],editId=null,pendingAtt=[],pvId=null,selIds=new Set(),bulkMode=false,calY,calM,subCnt=0,todoCnt=0;
+let events=[],payments=[],editId=null,pendingAtt=[],pvId=null,selIds=new Set(),bulkMode=false,calY,calM,subCnt=0,todoCnt=0;
 let notesQuill=null;
 
 // Airport IATA → address mapping
@@ -580,10 +586,23 @@ function slimAttachments(list){
     return o;
   });
 }
+const PAY_SK='nous_payments_v1';
 function cacheEvents(){
   try{
     localStorage.setItem(SK,JSON.stringify(events.map(ev=>Object.assign({},ev,{attachments:slimAttachments(ev.attachments)}))));
+    localStorage.setItem(PAY_SK,JSON.stringify(payments));
   }catch(e){console.warn('[nous] Events konnten nicht lokal zwischengespeichert werden',e);}
+}
+function readPaymentsRow(r){
+  const list=r&&r.data&&r.data.payments;
+  return Array.isArray(list)?list:[];
+}
+async function persistPayments(){
+  if(!remoteReady) return false;
+  const{error}=await sb.from(T_EVENT).upsert({id:LEDGER_ID,data:{ledger:true,payments},updated_by:currentUser||null});
+  if(error){reportSyncError('Zahlung konnte nicht gespeichert werden',error);return false;}
+  setSyncState(true);
+  return true;
 }
 
 function rowToEvent(r){return Object.assign({},r.data,{id:r.id,updatedAt:r.updated_at});}
@@ -627,13 +646,16 @@ async function persistEventDeleted(id){
 async function loadEventsFromSupabase(){
   const{data,error}=await sb.from(T_EVENT).select('id,data,updated_at,deleted');
   if(error){reportSyncError('Termine konnten nicht geladen werden',error,true);return false;}
-  events=(data||[]).filter(r=>!r.deleted).map(rowToEvent);
+  const rows=(data||[]).filter(r=>!r.deleted);
+  payments=readPaymentsRow(rows.find(r=>r.id===LEDGER_ID));
+  events=rows.filter(r=>r.id!==LEDGER_ID).map(rowToEvent);
   cacheEvents();
   return true;
 }
 
 // Der Server ist die Wahrheit: eingehende Zeilen werden unverändert übernommen.
 function applyEventRow(r){
+  if(r.id===LEDGER_ID){payments=r.deleted?[]:readPaymentsRow(r);return true;}
   const i=events.findIndex(e=>e.id===r.id);
   if(r.deleted){if(i<0)return false;events.splice(i,1);return true;}
   const ev=rowToEvent(r);
@@ -698,6 +720,7 @@ function subscribeRealtime(){
 
 async function loadData(){
   try{const l=localStorage.getItem(SK);if(l)events=JSON.parse(l);}catch(e){console.warn('[nous] localStorage Fehler',e);}
+  try{const l=localStorage.getItem(PAY_SK);if(l)payments=JSON.parse(l);}catch(e){console.warn('[nous] localStorage Fehler',e);}
   renderAll();renderCal();renderAktuell();updateInviteBadge();
   const[evOk]=await Promise.all([loadEventsFromSupabase(),loadActivityFromSupabase()]);
   remoteReady=evOk;
@@ -1226,14 +1249,14 @@ function renderAktuell(){
   html+=`</div>`;
 
   // Section: Kosten — nur der Saldo, Details im eigenen Tab
-  const aktOpen=allExpenses().filter(x=>expCents(x.exp)&&!x.exp.settledAt);
-  if(aktOpen.length){
-    const aktBal=sumBalance(aktOpen.map(x=>x.exp));
+  const aktOpen=openPositions();
+  if(aktOpen.length||payments.length){
+    const aktBal=totalBalanceCents();
     html+=`<div class="aktuell-section"><div class="aktuell-section-title">Kosten</div>
       <div class="bal-card" style="margin-bottom:0">
         <div>
           <div class="bal-amount ${balanceClass(aktBal)}">${balanceText(aktBal)}</div>
-          <div style="font-size:0.72rem;color:var(--text3);margin-top:3px">${aktOpen.length} offene ${aktOpen.length===1?'Position':'Positionen'} · ${fmtEur(sumTotal(aktOpen.map(x=>x.exp)))} gesamt</div>
+          <div style="font-size:0.72rem;color:var(--text3);margin-top:3px">${aktOpen.length} ${aktOpen.length===1?'Position':'Positionen'} · ${fmtEur(sumTotal(aktOpen.map(x=>x.exp)))} Kosten</div>
         </div>
         <button class="btn-secondary" data-action="switchTab" data-tab="kosten" style="font-size:0.78rem;padding:0 14px;min-height:38px;border-radius:8px;white-space:nowrap">Details</button>
       </div></div>`;
@@ -1358,6 +1381,30 @@ function allExpenses(){
 }
 function sumBalance(list){return list.reduce((s,e)=>s+expBalanceCents(e),0);}
 function sumTotal(list){return list.reduce((s,e)=>s+expCents(e),0);}
+// Eine Zahlung von Johann an Toja verringert Johanns Schuld und umgekehrt
+function paymentCents(p){
+  const n=Number(p&&p.amount);
+  return Number.isFinite(n)?Math.round(n*100):0;
+}
+function paymentBalanceCents(p){
+  const c=paymentCents(p);
+  return p.from==='johann'?-c:c;
+}
+function paymentsBalance(list){return (list||[]).reduce((s,p)=>s+paymentBalanceCents(p),0);}
+// Positionen, die in den Saldo eingehen. settledAt stammt aus der früheren
+// Alles-oder-nichts-Abrechnung; solche Posten gelten als erledigt.
+function openPositions(){return allExpenses().filter(x=>expCents(x.exp)&&!x.exp.settledAt);}
+function totalBalanceCents(){
+  return sumBalance(openPositions().map(x=>x.exp))+paymentsBalance(payments);
+}
+function paymentDirText(p){
+  return p.from==='johann'?'Johann → Toja':'Toja → Johann';
+}
+// Datum, unter dem eine Position zeitlich einsortiert wird
+function expenseDate(ev,exp){return (exp&&exp.date)||evPrimaryDate(ev)||'';}
+function lastPaymentDate(){
+  return payments.reduce((m,p)=>(p.date&&p.date>m)?p.date:m,'');
+}
 function balanceText(cents){
   if(cents===0) return 'Ausgeglichen';
   return cents>0?`Johann schuldet Toja ${fmtEur(cents)}`:`Toja schuldet Johann ${fmtEur(-cents)}`;
@@ -1952,29 +1999,42 @@ function showCalDay(ds){
 }
 
 // ── KOSTEN-ANSICHT ─────────────────────────────────────────────────────
+// 'alle' = sämtliche Positionen, 'seit' = nur die nach der letzten Zahlung
+let kostenScope='alle';
+function setKostenScope(v){kostenScope=v;renderKosten();}
+
 function renderKosten(){
   const feed=document.getElementById('kostenFeed');
   if(!feed) return;
-  const all=allExpenses().filter(x=>expCents(x.exp));
-  const open=all.filter(x=>!x.exp.settledAt);
-  const bal=sumBalance(open.map(x=>x.exp));
+  const positions=openPositions();
+  const bal=totalBalanceCents();
+  const paidSum=payments.reduce((s,p)=>s+paymentCents(p),0);
 
   let html=`<div class="bal-card">
     <div>
-      <div class="bal-label">Offener Saldo</div>
+      <div class="bal-label">Saldo</div>
       <div class="bal-amount ${balanceClass(bal)}">${balanceText(bal)}</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin-top:3px">${open.length} offene ${open.length===1?'Position':'Positionen'} · ${fmtEur(sumTotal(open.map(x=>x.exp)))} gesamt</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:3px">${fmtEur(sumTotal(positions.map(x=>x.exp)))} Kosten · ${fmtEur(paidSum)} gezahlt</div>
     </div>
-    ${open.length?`<button class="btn-secondary" data-action="askSettle" style="font-size:0.78rem;padding:0 14px;min-height:38px;border-radius:8px;white-space:nowrap">Saldo ausgleichen</button>`:''}
+    <button class="btn-secondary" data-action="openPaymentModal" style="font-size:0.78rem;padding:0 14px;min-height:38px;border-radius:8px;white-space:nowrap">Zahlung erfassen</button>
   </div>`;
 
-  // Offene Positionen, nach Termin gruppiert
-  html+=`<div class="aktuell-section"><div class="aktuell-section-title">Offene Positionen</div>`;
-  if(!open.length){
-    html+=`<div class="aktuell-today-empty">Keine offenen Kostenpositionen</div>`;
+  // Positionen je Termin — vollständige Historie, jüngster Termin zuerst
+  const cutoff=lastPaymentDate();
+  const useScope=kostenScope==='seit'&&cutoff;
+  const shown=useScope?positions.filter(x=>expenseDate(x.ev,x.exp)>cutoff):positions;
+  html+=`<div class="aktuell-section"><div class="aktuell-section-title">Positionen</div>`;
+  if(cutoff){
+    html+=`<div class="exp-filter">
+      <div class="filter-chip${kostenScope==='alle'?' active':''}" data-action="setKostenScope" data-scope="alle">Alle</div>
+      <div class="filter-chip${kostenScope==='seit'?' active':''}" data-action="setKostenScope" data-scope="seit">Seit letzter Zahlung</div>
+    </div>`;
+  }
+  if(!shown.length){
+    html+=`<div class="aktuell-today-empty">${useScope?'Seit der letzten Zahlung nichts angefallen':'Keine Kostenpositionen erfasst'}</div>`;
   } else {
     const byEvent=new Map();
-    open.forEach(({ev,exp})=>{
+    shown.forEach(({ev,exp})=>{
       if(!byEvent.has(ev.id)) byEvent.set(ev.id,{ev,list:[]});
       byEvent.get(ev.id).list.push(exp);
     });
@@ -2001,75 +2061,89 @@ function renderKosten(){
   }
   html+=`</div>`;
 
-  // Abgerechnete Runden — je Ausgleich ein Eintrag, der jüngste umkehrbar
-  const rounds=new Map();
-  all.filter(x=>x.exp.settledAt).forEach(({ev,exp})=>{
-    if(!rounds.has(exp.settledAt)) rounds.set(exp.settledAt,[]);
-    rounds.get(exp.settledAt).push(exp);
-  });
-  if(rounds.size){
-    const stamps=[...rounds.keys()].sort().reverse();
-    html+=`<div class="aktuell-section"><div class="aktuell-section-title">Abgerechnet</div>`;
-    html+=stamps.map((st,i)=>{
-      const list=rounds.get(st);
-      const rb=sumBalance(list);
-      return `<div class="exp-group">
-        <div class="exp-row">
-          <div class="exp-row-main">
-            <div style="font-weight:700">${esc(fmtAbsTime(st))}</div>
-            <div class="exp-row-meta">${list.length} ${list.length===1?'Position':'Positionen'} · ${rb===0?'ausgeglichen':(rb>0?'Johann → Toja ':'Toja → Johann ')+fmtEur(Math.abs(rb))}</div>
-          </div>
-          <span class="exp-row-amount">${fmtEur(sumTotal(list))}</span>
+  // Geleistete Zahlungen
+  html+=`<div class="aktuell-section"><div class="aktuell-section-title">Zahlungen</div>`;
+  if(!payments.length){
+    html+=`<div class="aktuell-today-empty">Noch keine Zahlungen erfasst</div>`;
+  } else {
+    html+=`<div class="exp-group">`+[...payments]
+      .sort((a,b)=>(b.date||'').localeCompare(a.date||''))
+      .map(p=>`<div class="pay-row">
+        <div class="exp-row-main">
+          <div class="pay-dir" style="color:var(--${p.from}-color)">${paymentDirText(p)}</div>
+          <div class="exp-row-meta">${p.date?fmtD(p.date):'ohne Datum'}${p.note?' · '+esc(p.note):''}</div>
         </div>
-        ${i===0?`<div style="margin-top:6px"><button class="btn-secondary" data-action="askUndoSettle" data-stamp="${esc(st)}" style="font-size:0.72rem;padding:0 10px;min-height:32px;border-radius:8px">Ausgleich rückgängig</button></div>`:''}
-      </div>`;
-    }).join('');
-    html+=`</div>`;
+        <span class="exp-row-amount">${fmtEur(paymentCents(p))}</span>
+        <button class="remove-todo" data-action="askDeletePayment" data-pay-id="${esc(p.id)}" title="Zahlung löschen">✕</button>
+      </div>`).join('')+`</div>`;
+  }
+  html+=`</div>`;
+
+  // Positionen aus der früheren Alles-oder-nichts-Abrechnung
+  const legacy=allExpenses().filter(x=>expCents(x.exp)&&x.exp.settledAt);
+  if(legacy.length){
+    html+=`<div class="aktuell-section"><div class="aktuell-section-title">Früher abgerechnet</div>
+      <div class="exp-group">
+        <div class="exp-row"><div class="exp-row-main">
+          <div>${legacy.length} ${legacy.length===1?'Position':'Positionen'} aus einer früheren Abrechnung</div>
+          <div class="exp-row-meta">Gehen nicht in den Saldo ein. Sie stehen weiterhin beim jeweiligen Termin.</div>
+        </div><span class="exp-row-amount">${fmtEur(sumTotal(legacy.map(x=>x.exp)))}</span></div>
+      </div></div>`;
   }
   feed.innerHTML=html;
 }
 
-function askSettle(){
-  const open=allExpenses().filter(x=>expCents(x.exp)&&!x.exp.settledAt);
-  if(!open.length){showToast('Keine offenen Positionen');return;}
-  const bal=sumBalance(open.map(x=>x.exp));
-  askConfirm(bal===0?'Positionen als abgerechnet markieren?':balanceText(bal),
-    `${open.length} offene ${open.length===1?'Position wird':'Positionen werden'} als abgerechnet markiert und fließen nicht mehr in den Saldo ein.`,
-    'Ausgleichen',settleBalance);
+// ── ZAHLUNG ERFASSEN ───────────────────────────────────────────────────
+function openPaymentModal(){
+  const bal=totalBalanceCents();
+  const fromEl=document.getElementById('p_from');
+  const amtEl=document.getElementById('p_amount');
+  const dateEl=document.getElementById('p_date');
+  const noteEl=document.getElementById('p_note');
+  const hint=document.getElementById('p_hint');
+  if(!fromEl) return;
+  // Vorbelegung: der Schuldner zahlt den offenen Saldo an den anderen
+  fromEl.value=bal<0?'toja':'johann';
+  amtEl.value=bal?(Math.abs(bal)/100).toFixed(2).replace('.',','):'';
+  dateEl.value=todayStr();
+  noteEl.value='';
+  hint.textContent=bal?`Offener Saldo: ${balanceText(bal)}`:'Der Saldo ist ausgeglichen.';
+  document.getElementById('paymentModal').classList.add('open');
 }
-// Ein Ausgleich markiert alle offenen Positionen mit demselben Zeitstempel.
-// Dadurch bleibt er als Runde erkennbar und lässt sich wieder aufheben.
-async function settleBalance(){
+async function savePayment(){
   if(!syncGuard()) return;
-  const open=allExpenses().filter(x=>expCents(x.exp)&&!x.exp.settledAt);
-  if(!open.length){showToast('Keine offenen Positionen');return;}
-  const bal=sumBalance(open.map(x=>x.exp));
-  const stamp=new Date().toISOString();
-  const touched=new Map();
-  open.forEach(({ev,exp})=>{exp.settledAt=stamp;touched.set(ev.id,ev);});
-  saveData();
-  for(const ev of touched.values()){
-    if(!await persistEvent(ev)){await reloadFromSupabase();return;}
-  }
-  logActivity('edit','Kostenausgleich',`${balanceText(bal)} · ${open.length} ${open.length===1?'Position':'Positionen'} abgerechnet`);
-  showToast('Ausgleich verbucht');
+  const amount=parseAmount(document.getElementById('p_amount').value);
+  if(!Number.isFinite(amount)||amount<=0){showToast('Bitte einen gültigen Betrag eingeben');return;}
+  const p={
+    id:'p_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+    from:document.getElementById('p_from').value,
+    amount,
+    date:document.getElementById('p_date').value||todayStr(),
+    note:document.getElementById('p_note').value.trim()
+  };
+  payments.push(p);
+  cacheEvents();
+  if(!await persistPayments()){payments=payments.filter(x=>x.id!==p.id);cacheEvents();return;}
+  closeModal('paymentModal');
+  logActivity('edit','Zahlung',`${paymentDirText(p)} · ${fmtEur(paymentCents(p))}${p.note?' · '+p.note:''}`);
+  showToast('Zahlung erfasst');
   renderEverything();
 }
-function askUndoSettle(stamp){
-  askConfirm('Ausgleich rückgängig machen?','Die Positionen dieser Abrechnung zählen wieder zum offenen Saldo.','Rückgängig',()=>undoSettlement(stamp));
+function askDeletePayment(id){
+  const p=payments.find(x=>x.id===id);
+  if(!p) return;
+  askConfirm('Zahlung löschen?',`${paymentDirText(p)} · ${fmtEur(paymentCents(p))} — der Saldo ändert sich entsprechend.`,'Löschen',()=>deletePayment(id));
 }
-async function undoSettlement(stamp){
+async function deletePayment(id){
   if(!syncGuard()) return;
-  const hit=allExpenses().filter(x=>x.exp.settledAt===stamp);
-  if(!hit.length){showToast('Abrechnung nicht gefunden');return;}
-  const touched=new Map();
-  hit.forEach(({ev,exp})=>{exp.settledAt='';touched.set(ev.id,ev);});
-  saveData();
-  for(const ev of touched.values()){
-    if(!await persistEvent(ev)){await reloadFromSupabase();return;}
-  }
-  logActivity('edit','Kostenausgleich',`Ausgleich vom ${fmtAbsTime(stamp)} rückgängig gemacht`);
-  showToast('Ausgleich aufgehoben');
+  const before=payments;
+  const p=payments.find(x=>x.id===id);
+  if(!p) return;
+  payments=payments.filter(x=>x.id!==id);
+  cacheEvents();
+  if(!await persistPayments()){payments=before;cacheEvents();return;}
+  logActivity('delete','Zahlung',`${paymentDirText(p)} · ${fmtEur(paymentCents(p))} gelöscht`);
+  showToast('Zahlung gelöscht');
   renderEverything();
 }
 
@@ -3465,8 +3539,10 @@ document.addEventListener('click', e=>{
     case 'datesFromTransport': datesFromTransport(t.dataset.person); break;
     case 'addExpense': addExpense(); break;
     case 'removeExpense': removeExpense(t.dataset.target); break;
-    case 'askSettle': askSettle(); break;
-    case 'askUndoSettle': askUndoSettle(t.dataset.stamp); break;
+    case 'openPaymentModal': openPaymentModal(); break;
+    case 'savePayment': savePayment(); break;
+    case 'askDeletePayment': askDeletePayment(t.dataset.payId); break;
+    case 'setKostenScope': setKostenScope(t.dataset.scope); break;
     case 'dismissConflictBanner': dismissConflictBanner(); break;
     case 'dismissConflict': e.stopPropagation(); dismissConflict(t.dataset.key); break;
     case 'calPrev': calPrev(); break;
