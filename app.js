@@ -485,62 +485,6 @@ function showLockScreen(){
 document.getElementById('pwInput').addEventListener('keydown',e=>{if(e.key==='Enter')signIn();});
 document.getElementById('pwEmail').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('pwInput').focus();});
 
-// ── FLIGHT LOOKUP ──
-async function lookupFlight(person, dir){
-  const numEl=document.getElementById(`t_${person}_${dir}_flugnum`);
-  const dateEl=document.getElementById(`t_${person}_${dir}_flugdate`);
-  if(!numEl||!numEl.value.trim()){showToast('Bitte Flugnummer eingeben');return;}
-
-  // Show loading state
-  numEl.disabled=true;
-  showToast('Flugdaten werden gesucht…');
-
-  try{
-    const flightNum=numEl.value.trim().replace(/\s/g,'').toUpperCase();
-    const flightDate=dateEl&&dateEl.value?dateEl.value:'';
-    let url=`/.netlify/functions/aviationstack?flight_iata=${encodeURIComponent(flightNum)}&limit=1`;
-    if(flightDate) url+=`&flight_date=${flightDate}`;
-
-    const resp=await fetch(url);
-    const data=await resp.json();
-
-    if(!data.data||data.data.length===0){
-      showToast('Flug nicht gefunden — bitte manuell eingeben');
-      numEl.disabled=false;
-      return;
-    }
-
-    const f=data.data[0];
-    const dep=f.departure||{};
-    const arr=f.arrival||{};
-
-    // Fill in fields
-    const fromEl=document.getElementById(`t_${person}_${dir}_flugfrom`);
-    const toEl=document.getElementById(`t_${person}_${dir}_flugto`);
-    const depEl=document.getElementById(`t_${person}_${dir}_flugdep`);
-    const arrEl=document.getElementById(`t_${person}_${dir}_flugarr`);
-
-    if(fromEl) fromEl.value=dep.iata||'';
-    if(toEl) toEl.value=arr.iata||'';
-
-    // Parse scheduled times (format: "2026-05-29T08:30:00+00:00")
-    if(dep.scheduled){
-      const t=new Date(dep.scheduled);
-      if(depEl) depEl.value=`${String(t.getUTCHours()).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')}`;
-      if(dateEl&&!dateEl.value) dateEl.value=t.toISOString().slice(0,10);
-    }
-    if(arr.scheduled){
-      const t=new Date(arr.scheduled);
-      if(arrEl) arrEl.value=`${String(t.getUTCHours()).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')}`;
-    }
-
-    showToast(`${flightNum}: ${dep.iata||'?'}→${arr.iata||'?'} gefunden`);
-  } catch(e){
-    showToast('Fehler beim Abrufen — bitte manuell eingeben');
-  }
-  numEl.disabled=false;
-}
-
 // ── STORAGE ──
 // Termine liegen als eine Zeile pro Termin in nous_event. Früher lag der gesamte
 // Bestand in einem einzigen JSON-Blob: wer zuletzt speicherte, schrieb seine
@@ -3190,26 +3134,72 @@ async function lookupFlightLeg(lid){
   const dateEl=document.getElementById(`leg_${lid}_flugdate`);
   if(!numEl||!numEl.value.trim()){showToast('Bitte Flugnummer eingeben');return;}
   numEl.disabled=true; showToast('Flugdaten werden gesucht…');
-  try{
-    const flightNum=numEl.value.trim().replace(/\s/g,'').toUpperCase();
-    const flightDate=dateEl&&dateEl.value?dateEl.value:'';
+  const flightNum=numEl.value.trim().replace(/\s/g,'').toUpperCase();
+  const flightDate=dateEl&&dateEl.value?dateEl.value:'';
+  const ask=async date=>{
     let url=`/.netlify/functions/aviationstack?flight_iata=${encodeURIComponent(flightNum)}&limit=1`;
-    if(flightDate) url+=`&flight_date=${flightDate}`;
+    if(date) url+=`&flight_date=${encodeURIComponent(date)}`;
     const resp=await fetch(url);
-    const data=await resp.json();
-    if(!data.data||!data.data.length){showToast('Flug nicht gefunden');numEl.disabled=false;return;}
-    const f=data.data[0],dep=f.departure||{},arr=f.arrival||{};
+    try{return await resp.json();}catch(e){return {error:{code:'',message:'Unlesbare Antwort'}};}
+  };
+  try{
+    let data=await ask(flightDate);
+    let ohneDatum=false;
+    // Der Gratistarif deckt nur aktuelle Flüge ab. Wird das Datum abgelehnt,
+    // liefert die Abfrage ohne Datum wenigstens Strecke und Planzeiten.
+    if(flightDate&&data.error&&/restricted|not_supported|historical/i.test(data.error.code||'')){
+      data=await ask('');
+      ohneDatum=true;
+    }
+    if(data.error){
+      showToast(flightErrorText(data.error));
+      numEl.disabled=false;
+      return;
+    }
+    if(!data.data||!data.data.length){
+      showToast('Flug nicht gefunden — bitte manuell eingeben');
+      numEl.disabled=false;
+      return;
+    }
+    const f=data.data[0];
+    const dep=f.departure||{},arr=f.arrival||{};
     const fromEl=document.getElementById(`leg_${lid}_flugfrom`);
     const toEl=document.getElementById(`leg_${lid}_flugto`);
     const depEl=document.getElementById(`leg_${lid}_flugdep`);
     const arrEl=document.getElementById(`leg_${lid}_flugarr`);
     if(fromEl) fromEl.value=dep.iata||'';
     if(toEl) toEl.value=arr.iata||'';
-    if(dep.scheduled){const t=new Date(dep.scheduled);if(depEl)depEl.value=`${String(t.getUTCHours()).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')}`;if(dateEl&&!dateEl.value)dateEl.value=t.toISOString().slice(0,10);}
-    if(arr.scheduled){const t=new Date(arr.scheduled);if(arrEl)arrEl.value=`${String(t.getUTCHours()).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')}`;}
-    showToast(`${flightNum}: ${dep.iata||'?'}→${arr.iata||'?'} gefunden`);
-  }catch(e){showToast('Fehler beim Abrufen');}
+    if(dep.scheduled){
+      const t=new Date(dep.scheduled);
+      if(depEl) depEl.value=`${String(t.getUTCHours()).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')}`;
+      if(dateEl&&!dateEl.value&&!ohneDatum) dateEl.value=t.toISOString().slice(0,10);
+    }
+    if(arr.scheduled){
+      const t=new Date(arr.scheduled);
+      if(arrEl) arrEl.value=`${String(t.getUTCHours()).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')}`;
+    }
+    showToast(`${flightNum}: ${dep.iata||'?'}→${arr.iata||'?'}${ohneDatum?' (aktueller Flugplan)':''}`);
+  }catch(e){
+    showToast('Flugabfrage nicht erreichbar');
+  }
   numEl.disabled=false;
+}
+// Aus dem Fehlercode von AviationStack eine Meldung machen, mit der man etwas
+// anfangen kann. Bisher hieß jeder Fehlschlag „Flug nicht gefunden".
+function flightErrorText(err){
+  const code=(err&&err.code)||'';
+  const map={
+    not_configured:'Flugabfrage nicht eingerichtet (Schlüssel fehlt in Netlify)',
+    invalid_access_key:'AviationStack-Schlüssel ist ungültig',
+    missing_access_key:'AviationStack-Schlüssel fehlt',
+    inactive_user:'AviationStack-Konto ist inaktiv',
+    usage_limit_reached:'AviationStack-Kontingent aufgebraucht',
+    rate_limit_reached:'Zu viele Abfragen — später erneut versuchen',
+    https_access_restricted:'AviationStack-Tarif erlaubt kein HTTPS',
+    function_access_restricted:'Diese Abfrage ist im AviationStack-Tarif nicht enthalten',
+    historical_data_restricted:'Flüge zu anderen Tagen sind im AviationStack-Tarif nicht enthalten'
+  };
+  return map[code]||(err&&err.message)||'Flugabfrage fehlgeschlagen';
 }
 
 function collectLegs(person, dir){
