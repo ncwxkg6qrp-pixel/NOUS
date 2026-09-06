@@ -473,10 +473,6 @@ textarea{resize:vertical;min-height:64px}
 .exp-row-main{flex:1 1 auto;min-width:0}
 .exp-row-meta{font-size:0.68rem;color:var(--text3);margin-top:1px}
 .exp-row-amount{font-weight:700;color:var(--text);margin-left:auto;white-space:nowrap;flex-shrink:0}
-.sw-id{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.78rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:1px 5px;user-select:all}
-.sw-group{border:1px solid var(--border);border-radius:8px;padding:9px 11px;margin-bottom:7px}
-.sw-note{font-size:0.74rem;color:var(--text3);line-height:1.5}
-.sw-err{background:var(--red-soft);border:1px solid var(--red);border-radius:8px;padding:9px 11px;color:var(--red);font-size:0.8rem}
 .pay-row{display:flex;align-items:center;gap:10px;font-size:0.8rem;padding:7px 0;border-bottom:1px solid var(--border)}
 .pay-row:last-child{border-bottom:none}
 .pay-dir{font-weight:700}
@@ -644,7 +640,6 @@ textarea{resize:vertical;min-height:64px}
             <div class="ham-item ham-item-new" data-action="openNewModal">+ Neuer Termin</div>
             <div class="ham-item ham-item-new" data-action="openExpenseModal">+ Ausgabe</div>
             <div class="ham-item ham-item-invites" data-action="openInvites">Einladungen<span class="invite-badge-inline" id="inviteBadgeMenu" style="display:none">0</span></div>
-            <div class="ham-item ham-item-pw" data-action="openSplitwiseModal">Splitwise</div>
             <div class="ham-item ham-item-pw" data-action="openPwModal">Passwort ändern</div>
             <div class="ham-item ham-item-out" data-action="signOut">Abmelden</div>
           </div>
@@ -767,23 +762,6 @@ textarea{resize:vertical;min-height:64px}
     <div class="confirm-dialog-btns">
       <button class="btn-secondary" data-action="closeConfirmDialog">Abbrechen</button>
       <button class="btn-danger" id="confirmDialogOk" data-action="confirmDialogOk">Löschen</button>
-    </div>
-  </div>
-</div>
-
-<!-- SPLITWISE -->
-<div class="modal-overlay" id="splitwiseModal">
-  <div class="modal" style="max-width:480px">
-    <div class="modal-header">
-      <div class="modal-title">Splitwise</div>
-      <div class="modal-close" data-action="closeModal" data-modal="splitwiseModal">✕</div>
-    </div>
-    <div class="modal-body">
-      <div id="swBody" style="font-size:0.82rem"></div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn-secondary" data-action="closeModal" data-modal="splitwiseModal">Schließen</button>
-      <button class="btn-primary" data-action="checkSplitwise">Verbindung prüfen</button>
     </div>
   </div>
 </div>

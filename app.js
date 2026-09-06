@@ -2097,54 +2097,6 @@ function renderKosten(){
   feed.innerHTML=html;
 }
 
-// ── SPLITWISE ──────────────────────────────────────────────────────────
-// Der Splitwise-Schlüssel liegt ausschließlich serverseitig in der Netlify-
-// Function. Der Browser schickt nur sein Supabase-Zugangstoken mit, damit die
-// Function prüfen kann, dass wirklich einer von uns beiden anfragt.
-async function splitwiseCall(action,payload){
-  const{data}=await sb.auth.getSession();
-  const token=data&&data.session&&data.session.access_token;
-  if(!token) throw new Error('Nicht angemeldet');
-  const resp=await fetch('/.netlify/functions/splitwise',{
-    method:'POST',
-    headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},
-    body:JSON.stringify(Object.assign({action},payload||{}))
-  });
-  let body=null;
-  try{body=await resp.json();}catch(e){body=null;}
-  if(!resp.ok||!body||body.error) throw new Error((body&&body.error)||`Fehler ${resp.status}`);
-  return body;
-}
-function openSplitwiseModal(){
-  document.getElementById('swBody').innerHTML='<div class="sw-note">Noch nicht geprüft. „Verbindung prüfen" holt das verbundene Konto und die Gruppen samt IDs.</div>';
-  document.getElementById('splitwiseModal').classList.add('open');
-}
-async function checkSplitwise(){
-  const box=document.getElementById('swBody');
-  if(!box) return;
-  box.innerHTML='<div class="sw-note">Wird geprüft …</div>';
-  let res;
-  try{
-    res=await splitwiseCall('whoami');
-  }catch(err){
-    box.innerHTML=`<div class="sw-err">${esc(err.message||'Unbekannter Fehler')}</div>
-      <div class="sw-note" style="margin-top:9px">Prüfe, ob in Netlify <span class="sw-id">SPLITWISE_API_KEY</span> und <span class="sw-id">ALLOWED_EMAILS</span> gesetzt sind — beides nur im Produktionskontext, nicht in Deploy Previews.</div>`;
-    return;
-  }
-  const cfg=res.configuredGroupId;
-  box.innerHTML=`
-    <div style="margin-bottom:10px">Verbunden als <strong>${esc(res.user.first_name)} ${esc(res.user.last_name)}</strong> · ID <span class="sw-id">${esc(String(res.user.id))}</span></div>
-    ${(res.groups||[]).map(g=>`
-      <div class="sw-group">
-        <div style="font-weight:700;margin-bottom:3px">${esc(g.name)||'—'}${String(g.id)===String(cfg||'')?' <span style="color:var(--green);font-size:0.72rem">· eingerichtet</span>':''}</div>
-        <div class="sw-note">Gruppen-ID <span class="sw-id">${esc(String(g.id))}</span></div>
-        <div class="sw-note" style="margin-top:3px">${(g.members||[]).map(m=>`${esc(m.first_name)} ${esc(m.last_name)} <span class="sw-id">${esc(String(m.id))}</span>`).join(' · ')}</div>
-      </div>`).join('')||'<div class="sw-note">Keine Gruppen gefunden.</div>'}
-    <div class="sw-note" style="margin-top:9px">${cfg
-      ?`Eingerichtete Gruppe: <span class="sw-id">${esc(String(cfg))}</span>`
-      :'Noch keine Gruppe eingerichtet — trage die ID der gemeinsamen Gruppe in Netlify als <span class="sw-id">SPLITWISE_GROUP_ID</span> ein.'}</div>`;
-}
-
 // ── AUSGABE SCHNELL ERFASSEN ───────────────────────────────────────────
 // Ausgaben fallen unterwegs an. Sie sollen sich erfassen lassen, ohne den
 // ganzen Termin zu öffnen: Betrag, Zweck, fertig — der Rest ist vorbelegt.
@@ -3668,8 +3620,6 @@ document.addEventListener('click', e=>{
     case 'datesFromTransport': datesFromTransport(t.dataset.person); break;
     case 'addExpense': addExpense(); break;
     case 'removeExpense': removeExpense(t.dataset.target); break;
-    case 'openSplitwiseModal': openSplitwiseModal(); closeHamburger(); break;
-    case 'checkSplitwise': checkSplitwise(); break;
     case 'openExpenseModal': e.stopPropagation(); openExpenseModal(t.dataset.evId); closeHamburger(); break;
     case 'saveQuickExpense': saveQuickExpense(); break;
     case 'openPaymentModal': openPaymentModal(); break;
