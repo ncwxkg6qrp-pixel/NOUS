@@ -1986,8 +1986,10 @@ function renderKosten(){
           <div class="exp-group-title" data-action="openPreview" data-ev-id="${ev.id}">${esc(ev.title)}</div>
           <div class="exp-group-sub">${ev.multiday?fmtD(ev.dateFrom)+' – '+fmtD(ev.dateTo):fmtD(ev.date)}</div>
           ${list.map(x=>`<div class="exp-row">
-            <span>${esc(x.desc)||'—'}</span>
-            <span style="font-size:0.7rem;color:var(--text3)">verauslagt: <span style="color:var(--${x.paidBy}-color);font-weight:700">${personLabel(x.paidBy)}</span> · getragen: ${BEARER_LABEL[x.bearer||'beide']}</span>
+            <div class="exp-row-main">
+              <div>${esc(x.desc)||'—'}${x.date?` <span class="exp-row-meta" style="display:inline">· ${fmtD(x.date)}</span>`:''}</div>
+              <div class="exp-row-meta">verauslagt: <span style="color:var(--${x.paidBy}-color);font-weight:700">${personLabel(x.paidBy)}</span> · getragen: ${BEARER_LABEL[x.bearer||'beide']}</div>
+            </div>
             <span class="exp-row-amount">${fmtEur(expCents(x))}</span>
           </div>`).join('')}
           <div class="exp-row" style="border-top:1px solid var(--border);margin-top:5px;padding-top:5px">
@@ -2013,8 +2015,10 @@ function renderKosten(){
       const rb=sumBalance(list);
       return `<div class="exp-group">
         <div class="exp-row">
-          <span style="font-weight:700">${esc(fmtAbsTime(st))}</span>
-          <span style="font-size:0.7rem;color:var(--text3)">${list.length} ${list.length===1?'Position':'Positionen'} · ${rb===0?'ausgeglichen':(rb>0?'Johann → Toja ':'Toja → Johann ')+fmtEur(Math.abs(rb))}</span>
+          <div class="exp-row-main">
+            <div style="font-weight:700">${esc(fmtAbsTime(st))}</div>
+            <div class="exp-row-meta">${list.length} ${list.length===1?'Position':'Positionen'} · ${rb===0?'ausgeglichen':(rb>0?'Johann → Toja ':'Toja → Johann ')+fmtEur(Math.abs(rb))}</div>
+          </div>
           <span class="exp-row-amount">${fmtEur(sumTotal(list))}</span>
         </div>
         ${i===0?`<div style="margin-top:6px"><button class="btn-secondary" data-action="askUndoSettle" data-stamp="${esc(st)}" style="font-size:0.72rem;padding:0 10px;min-height:32px;border-radius:8px">Ausgleich rückgängig</button></div>`:''}
@@ -3307,8 +3311,10 @@ function openPreview(id){
     const bal=sumBalance(openExps);
     html+=`<div class="pv-block" style="margin-bottom:8px"><div class="pv-block-title">Kosten</div>`+
       pvExps.map(x=>`<div class="exp-row">
-        <span>${esc(x.desc)||'—'}</span>
-        <span style="font-size:0.7rem;color:var(--text3)">verauslagt: <span style="color:var(--${x.paidBy}-color);font-weight:700">${personLabel(x.paidBy)}</span> · getragen: ${BEARER_LABEL[x.bearer||'beide']}${x.settledAt?' · abgerechnet':''}</span>
+        <div class="exp-row-main">
+          <div>${esc(x.desc)||'—'}</div>
+          <div class="exp-row-meta">verauslagt: <span style="color:var(--${x.paidBy}-color);font-weight:700">${personLabel(x.paidBy)}</span> · getragen: ${BEARER_LABEL[x.bearer||'beide']}${x.settledAt?' · abgerechnet':''}</div>
+        </div>
         <span class="exp-row-amount">${fmtEur(expCents(x))}</span>
       </div>`).join('')+
       `<div class="exp-row" style="border-top:1px solid var(--border);margin-top:5px;padding-top:5px">
