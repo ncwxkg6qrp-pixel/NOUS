@@ -1852,6 +1852,7 @@ function renderCard(e){
             <div class="card-menu" id="cm_${e.id}">
               <div class="card-menu-item" data-action="openPreview" data-ev-id="${e.id}">Vorschau</div>
               <div class="card-menu-item" data-action="openModal" data-ev-id="${e.id}">Bearbeiten</div>
+              <div class="card-menu-item" data-action="openExpenseModal" data-ev-id="${e.id}">Ausgabe hinzufügen</div>
               ${(e.lat&&e.lon)||(e.accommodations&&e.accommodations.some(a=>a.lat))||(e.subevents&&e.subevents.some(s=>s.lat))?`<div class="card-menu-item" data-action="openEventMap" data-ev-id="${e.id}">Karte</div>`:''}
             </div>
           </div>
@@ -2016,7 +2017,10 @@ function renderKosten(){
       <div class="bal-amount ${balanceClass(bal)}">${balanceText(bal)}</div>
       <div style="font-size:0.72rem;color:var(--text3);margin-top:3px">${fmtEur(sumTotal(positions.map(x=>x.exp)))} Kosten · ${fmtEur(paidSum)} gezahlt</div>
     </div>
-    <button class="btn-secondary" data-action="openPaymentModal" style="font-size:0.78rem;padding:0 14px;min-height:38px;border-radius:8px;white-space:nowrap">Zahlung erfassen</button>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="btn-primary" data-action="openExpenseModal" style="font-size:0.78rem;padding:0 14px;min-height:38px;border-radius:8px;white-space:nowrap">+ Ausgabe</button>
+      <button class="btn-secondary" data-action="openPaymentModal" style="font-size:0.78rem;padding:0 14px;min-height:38px;border-radius:8px;white-space:nowrap">Zahlung erfassen</button>
+    </div>
   </div>`;
 
   // Positionen je Termin — vollständige Historie, jüngster Termin zuerst
@@ -2091,6 +2095,83 @@ function renderKosten(){
       </div></div>`;
   }
   feed.innerHTML=html;
+}
+
+// ── AUSGABE SCHNELL ERFASSEN ───────────────────────────────────────────
+// Ausgaben fallen unterwegs an. Sie sollen sich erfassen lassen, ohne den
+// ganzen Termin zu öffnen: Betrag, Zweck, fertig — der Rest ist vorbelegt.
+// Reihenfolge der Terminauswahl: laufende zuerst, dann kommende, dann
+// vergangene. Der wahrscheinlichste Termin steht damit oben.
+function expensePickerEvents(){
+  const today=todayStr();
+  const withRange=events.map(ev=>{
+    const from=ev.multiday?(ev.dateFrom||''):(ev.date||'');
+    const to=(ev.multiday?(ev.dateTo||ev.dateFrom):(ev.date||''))||from;
+    return {ev,from,to};
+  });
+  const byFrom=(a,b)=>a.from.localeCompare(b.from);
+  const running=withRange.filter(x=>x.from&&x.from<=today&&x.to>=today).sort(byFrom);
+  const upcoming=withRange.filter(x=>x.from>today).sort(byFrom);
+  const past=withRange.filter(x=>x.from&&x.to<today).sort((a,b)=>b.to.localeCompare(a.to));
+  const undated=withRange.filter(x=>!x.from);
+  return [...running,...upcoming,...past,...undated].map(x=>x.ev);
+}
+function openExpenseModal(evId){
+  const list=expensePickerEvents();
+  if(!list.length){showToast('Bitte zuerst einen Termin anlegen');return;}
+  const sel=document.getElementById('q_event');
+  if(!sel) return;
+  sel.innerHTML=list.map(ev=>{
+    const ds=ev.multiday?`${fmtD(ev.dateFrom)} – ${fmtD(ev.dateTo)}`:fmtD(ev.date);
+    return `<option value="${esc(ev.id)}">${esc(ev.title)||'—'}${ds?' · '+ds:''}</option>`;
+  }).join('');
+  sel.value=(evId&&list.some(ev=>ev.id===evId))?evId:list[0].id;
+  document.getElementById('q_amount').value='';
+  document.getElementById('q_desc').value='';
+  document.getElementById('q_date').value=todayStr();
+  document.getElementById('q_paid').value=currentUser||'toja';
+  _quickBearerTouched=false;
+  syncQuickBearer();
+  document.getElementById('expenseModal').classList.add('open');
+  // Direkt in den Betrag springen — auf dem iPhone öffnet das die Tastatur
+  setTimeout(()=>document.getElementById('q_amount').focus(),50);
+}
+// Bei Terminen für eine Person trägt im Zweifel diese Person die Kosten.
+// Sobald der Nutzer die Kostentragung selbst gesetzt hat, bleibt seine Wahl
+// stehen — ein Terminwechsel darf eine bewusste Angabe nicht überschreiben.
+let _quickBearerTouched=false;
+function markQuickBearerTouched(){_quickBearerTouched=true;}
+function syncQuickBearer(){
+  if(_quickBearerTouched) return;
+  const ev=events.find(e=>e.id===document.getElementById('q_event')?.value);
+  const owner=(ev&&ev.owner)||'gemeinsam';
+  const b=document.getElementById('q_bearer');
+  if(b) b.value=owner==='gemeinsam'?'beide':owner;
+}
+async function saveQuickExpense(){
+  if(!syncGuard()) return;
+  const ev=events.find(e=>e.id===document.getElementById('q_event').value);
+  if(!ev){showToast('Bitte einen Termin wählen');return;}
+  const amount=parseAmount(document.getElementById('q_amount').value);
+  if(!Number.isFinite(amount)||amount<=0){showToast('Bitte einen gültigen Betrag eingeben');return;}
+  const desc=document.getElementById('q_desc').value.trim();
+  if(!desc){showToast('Bitte angeben, wofür');return;}
+  const exp={
+    id:'x_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+    desc,amount,
+    paidBy:document.getElementById('q_paid').value,
+    bearer:document.getElementById('q_bearer').value,
+    date:document.getElementById('q_date').value||'',
+    settledAt:''
+  };
+  const before=eventExpenses(ev);
+  ev.expenses=[...before,exp];
+  saveData();
+  if(!await persistEvent(ev)){ev.expenses=before;saveData();return;}
+  closeModal('expenseModal');
+  logActivity('edit',ev.title,`Ausgabe: ${desc} · ${fmtEur(expCents(exp))} · verauslagt ${personLabel(exp.paidBy)}`);
+  showToast(`${fmtEur(expCents(exp))} erfasst`);
+  renderEverything();
 }
 
 // ── ZAHLUNG ERFASSEN ───────────────────────────────────────────────────
@@ -3539,6 +3620,8 @@ document.addEventListener('click', e=>{
     case 'datesFromTransport': datesFromTransport(t.dataset.person); break;
     case 'addExpense': addExpense(); break;
     case 'removeExpense': removeExpense(t.dataset.target); break;
+    case 'openExpenseModal': e.stopPropagation(); openExpenseModal(t.dataset.evId); closeHamburger(); break;
+    case 'saveQuickExpense': saveQuickExpense(); break;
     case 'openPaymentModal': openPaymentModal(); break;
     case 'savePayment': savePayment(); break;
     case 'askDeletePayment': askDeletePayment(t.dataset.payId); break;
@@ -3627,6 +3710,8 @@ document.addEventListener('change', e=>{
   if(a==='toggleLegType') toggleLegType(t.dataset.lid);
   else if(a==='updateTodoOwnerStyle') updateTodoOwnerStyle(t);
   else if(a==='updateExpStyle') updateExpStyle(t);
+  else if(a==='syncQuickBearer') syncQuickBearer();
+  else if(a==='markQuickBearerTouched') markQuickBearerTouched();
   else if(a==='togglePerPersonDates') togglePerPersonDates();
   else if(a==='syncSplitDates') syncSplitDates();
 });
