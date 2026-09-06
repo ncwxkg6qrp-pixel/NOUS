@@ -1303,6 +1303,7 @@ let conflictingEventIds=new Set();
 function saveDismissedConflicts(){
   try{localStorage.setItem(CONFLICT_SK,JSON.stringify([...dismissedConflictKeys]));}catch(e){}
 }
+function todayStr(){return _ds(new Date());}
 function conflictKey(date,evs){return date+'::'+evs.map(e=>e.id).sort().join(',');}
 function dismissConflict(key){
   dismissedConflictKeys.add(key);
@@ -1330,17 +1331,22 @@ function detectConflicts(){
     return [o];
   }
 
-  // Only true multi-day events (at least 2 distinct days) participate in conflict detection
-  const multiEvs=events.filter(ev=>ev.multiday&&ev.dateFrom&&ev.dateTo&&ev.dateTo>ev.dateFrom);
+  const today=todayStr();
+
+  // Only true multi-day events (at least 2 distinct days) that are not fully in the past
+  const multiEvs=events.filter(ev=>ev.multiday&&ev.dateFrom&&ev.dateTo&&ev.dateTo>ev.dateFrom&&ev.dateTo>=today);
 
   const dateMap={};
   multiEvs.forEach(ev=>{
     let d=new Date(ev.dateFrom+'T00:00:00');
     const end=new Date(ev.dateTo+'T00:00:00');
     while(d<=end){
-      const ds=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      if(!dateMap[ds]) dateMap[ds]=[];
-      dateMap[ds].push(ev);
+      const ds=_ds(d);
+      // Conflicts on past days are irrelevant
+      if(ds>=today){
+        if(!dateMap[ds]) dateMap[ds]=[];
+        dateMap[ds].push(ev);
+      }
       d.setDate(d.getDate()+1);
     }
   });
@@ -1821,6 +1827,11 @@ function eventsOverlap(a, b){
   if(!aFrom||!bFrom) return false;
   return aFrom<=bTo&&aTo>=bFrom;
 }
+// Last day both events share — used to ignore conflicts that lie entirely in the past
+function overlapEnd(a, b){
+  const aTo=a.dateTo||a.date||'', bTo=b.dateTo||b.date||'';
+  return aTo<bTo?aTo:bTo;
+}
 
 function renderInvites(){
   const feed=document.getElementById('invitesFeed');
@@ -1835,8 +1846,9 @@ function renderInvites(){
     const inv=ev.invite;
     const fromName=inv.from==='toja'?'Toja':'Johann';
     const ds=ev.multiday?`${fmtD(ev.dateFrom)} – ${fmtD(ev.dateTo)}`:fmtD(ev.date);
-    // Conflict detection: other events of the invited person on the same dates
-    const conflicts=events.filter(e=>e.id!==ev.id&&(e.owner===currentUser||e.owner==='gemeinsam')&&eventsOverlap(e,ev));
+    // Conflict detection: other events of the invited person on the same dates (future only)
+    const today=todayStr();
+    const conflicts=events.filter(e=>e.id!==ev.id&&(e.owner===currentUser||e.owner==='gemeinsam')&&eventsOverlap(e,ev)&&overlapEnd(e,ev)>=today);
     const conflictHtml=conflicts.length?`<div class="invite-conflict">
       <div class="invite-conflict-title">Terminierungskonflikt (${conflicts.length})</div>
       ${conflicts.map(c=>`<div class="invite-conflict-item">· ${esc(c.title)} – ${c.multiday?fmtD(c.dateFrom):fmtD(c.date)}</div>`).join('')}
