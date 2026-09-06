@@ -917,6 +917,54 @@ function collectAccoms(){
 let mapInstance=null;
 const STATUS_COLORS={save:'#c9a600',zugesagt:'#0f6cbd',teilweise:'#d07000',alles:'#107c10',final:'#107c10'};
 
+// Karte lohnt sich, sobald irgendein Ort hinterlegt ist – auch ohne gespeicherte
+// Koordinaten, denn diese werden beim Öffnen der Karte nachgeschlagen.
+function eventHasMapData(ev){
+  if(!ev) return false;
+  if((ev.lat&&ev.lon)||ev.location) return true;
+  if((ev.accommodations||[]).some(a=>(a.lat&&a.lon)||a.addr)) return true;
+  if((ev.subevents||[]).some(s=>(s.lat&&s.lon)||s.location)) return true;
+  return PERSONS.some(p=>DIRS.some(d=>{
+    const raw=(ev.transport&&ev.transport[p]&&ev.transport[p][d])||[];
+    const legs=Array.isArray(raw)?raw:(raw&&raw.type?[raw]:[]);
+    return legs.some(l=>l&&(l.type==='flug'||l.type==='zug')&&l.data&&(l.data.from||l.data.to));
+  }));
+}
+
+// Geocoding mit lokalem Cache – hält die Nominatim-Last klein und macht
+// wiederholtes Öffnen der Karte schnell.
+const GEOCACHE_KEY='nous_geocache_v1';
+let _geoCache=null,_geoLastCall=0;
+function geoCache(){
+  if(_geoCache) return _geoCache;
+  try{_geoCache=JSON.parse(localStorage.getItem(GEOCACHE_KEY)||'{}');}catch(e){_geoCache={};}
+  if(!_geoCache||typeof _geoCache!=='object') _geoCache={};
+  return _geoCache;
+}
+async function geocodeCached(q){
+  if(!q) return null;
+  const key=String(q).trim().toLowerCase();
+  if(!key) return null;
+  const cache=geoCache();
+  if(cache[key]) return cache[key];
+  // Nominatim-Nutzungsrichtlinie: maximal eine Anfrage pro Sekunde
+  const wait=1000-(Date.now()-_geoLastCall);
+  if(wait>0) await new Promise(r=>setTimeout(r,wait));
+  _geoLastCall=Date.now();
+  const url=`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&accept-language=de`;
+  const resp=await fetch(url);
+  if(!resp.ok) return null;
+  const data=await resp.json();
+  if(!data||!data[0]) return null;
+  const lat=parseFloat(data[0].lat),lon=parseFloat(data[0].lon);
+  if(isNaN(lat)||isNaN(lon)) return null;
+  cache[key]={lat,lon};
+  const keys=Object.keys(cache);
+  if(keys.length>300) delete cache[keys[0]];
+  try{localStorage.setItem(GEOCACHE_KEY,JSON.stringify(cache));}catch(e){}
+  return cache[key];
+}
+
 function openEventMap(evId){
   const ev=events.find(e=>e.id===evId); if(!ev) return;
   document.getElementById('mapModalTitle').textContent=ev.title;
@@ -928,54 +976,99 @@ function openEventMap(evId){
     if(mapInstance){mapInstance.remove();mapInstance=null;}
 
     mapInstance=L.map('mapContainer',{zoomControl:true});
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',{
-      attribution:'© OpenStreetMap © CartoDB',subdomains:'abcd',maxZoom:19
+    // Kachel-Quelle ohne API-Key (CartoDB-Basemaps verlangen inzwischen einen Schlüssel
+    // und liefern sonst nur noch ein "API KEY REQUIRED"-Wasserzeichen zurück).
+    const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+      attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>-Mitwirkende',
+      maxZoom:19
     }).addTo(mapInstance);
+    let tileErrLogged=false;
+    tiles.on('tileerror',()=>{ if(!tileErrLogged){tileErrLogged=true;console.warn('[nous] Kartenkacheln konnten nicht geladen werden');} });
 
     const markers=[];
 
     function mkIcon(html,size=16){
       return L.divIcon({html,className:'',iconSize:[size,size],iconAnchor:[size/2,size/2]});
     }
+    // Tropfenförmiger Pin mit Symbol – ersetzt die früheren, im Code leeren Icons,
+    // die zu unsichtbaren Markern geführt haben.
+    function mkPin(color,glyph){
+      return L.divIcon({
+        className:'',
+        html:`<div style="position:relative;width:28px;height:36px">`+
+             `<svg width="28" height="36" viewBox="0 0 28 36" xmlns="http://www.w3.org/2000/svg">`+
+             `<path d="M14 1C7.4 1 2 6.3 2 12.9 2 21.4 14 35 14 35s12-13.6 12-22.1C26 6.3 20.6 1 14 1z" fill="${color}" stroke="#fff" stroke-width="2"/></svg>`+
+             `<div style="position:absolute;left:0;top:5px;width:28px;display:flex;align-items:center;justify-content:center">${glyph}</div>`+
+             `</div>`,
+        iconSize:[28,36],iconAnchor:[14,36],popupAnchor:[0,-32]
+      });
+    }
+    const GLYPH_PLANE='<svg width="15" height="15" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>';
+    const GLYPH_TRAIN='<svg width="15" height="15" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M12 2c-4 0-8 .5-8 4v9.5A3.5 3.5 0 0 0 7.5 19L6 20.5v.5h12v-.5L16.5 19a3.5 3.5 0 0 0 3.5-3.5V6c0-3.5-3.6-4-8-4zM7.5 17A1.5 1.5 0 1 1 9 15.5 1.5 1.5 0 0 1 7.5 17zM11 10H6V6h5zm2 0V6h5v4zm3.5 7a1.5 1.5 0 1 1 1.5-1.5 1.5 1.5 0 0 1-1.5 1.5z"/></svg>';
+    const GLYPH_BED='<svg width="15" height="15" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M7 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm12-6h-8v7H3V5H1v15h2v-3h18v3h2v-9a4 4 0 0 0-4-4z"/></svg>';
     function fitMap(){
       if(!mapInstance) return;
       if(!markers.length){mapInstance.setView([48.1,11.6],5);return;}
       if(markers.length===1){mapInstance.setView(markers[0].getLatLng(),13);return;}
       mapInstance.fitBounds(L.featureGroup(markers).getBounds().pad(0.2));
     }
+    // Das Modal wird eingeblendet, während die Karte entsteht: Leaflet misst dann eine
+    // falsche Containergröße, wodurch Kacheln fehlen und Marker verschoben wirken.
+    function refit(){
+      if(!mapInstance) return;
+      mapInstance.invalidateSize({animate:false});
+      fitMap();
+    }
+    mapInstance.whenReady(()=>requestAnimationFrame(refit));
+    setTimeout(refit,350);
+    if(window.ResizeObserver){
+      const ro=new ResizeObserver(()=>{ if(mapInstance) mapInstance.invalidateSize({animate:false}); });
+      ro.observe(container);
+      mapInstance.on('unload',()=>ro.disconnect());
+    }
 
-    // Main event location
+    // Hauptort
+    const evIcon=mkIcon(`<div style="width:16px;height:16px;border-radius:50%;background:${STATUS_COLORS[ev.status]||'#0f6cbd'};border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.35)"></div>`);
+    const evDates=ev.multiday?`${fmtD(ev.dateFrom)} – ${fmtD(ev.dateTo)}`:fmtD(ev.date);
+    const evPopup=`<strong>${esc(ev.title)}</strong><br>${evDates}`;
+    // Orte ohne gespeicherte Koordinaten (z.B. frei eingetippte Adressen) werden
+    // unten nachgeschlagen, statt einfach von der Karte zu verschwinden.
+    const pending=[];
     if(ev.lat&&ev.lon){
-      const color=STATUS_COLORS[ev.status]||'#0f6cbd';
-      const m=L.marker([parseFloat(ev.lat),parseFloat(ev.lon)],{
-        icon:mkIcon(`<div style="width:16px;height:16px;border-radius:50%;background:${color};border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.35)"></div>`)
-      }).addTo(mapInstance);
-      const ds=ev.multiday?`${fmtD(ev.dateFrom)} – ${fmtD(ev.dateTo)}`:fmtD(ev.date);
-      m.bindPopup(`<strong>${esc(ev.title)}</strong><br>${ds}`).openPopup();
+      const m=L.marker([parseFloat(ev.lat),parseFloat(ev.lon)],{icon:evIcon}).addTo(mapInstance);
+      m.bindPopup(evPopup).openPopup();
       markers.push(m);
+    } else if(ev.location){
+      pending.push({searchQ:resolveAddr(ev.location)||ev.location,icon:evIcon,popup:evPopup,open:true});
     }
 
     // Subevents
     (ev.subevents||[]).forEach(s=>{
-      if(!s.lat||!s.lon) return;
-      const m=L.marker([parseFloat(s.lat),parseFloat(s.lon)],{
-        icon:mkIcon(`<div style="width:12px;height:12px;border-radius:50%;background:#5c2e91;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.3)"></div>`)
-      }).addTo(mapInstance);
-      m.bindPopup(`<strong>${esc(s.title)||'Subevent'}</strong><br>${fmtD(s.date)}${s.time?' · '+esc(s.time):''}`);
-      markers.push(m);
+      const icon=mkIcon(`<div style="width:12px;height:12px;border-radius:50%;background:#5c2e91;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.3)"></div>`,12);
+      const popup=`<strong>${esc(s.title)||'Subevent'}</strong><br>${fmtD(s.date)}${s.time?' · '+esc(s.time):''}`;
+      if(s.lat&&s.lon){
+        const m=L.marker([parseFloat(s.lat),parseFloat(s.lon)],{icon}).addTo(mapInstance);
+        m.bindPopup(popup);
+        markers.push(m);
+      } else if(s.location){
+        pending.push({searchQ:s.location,icon,popup});
+      }
     });
 
-    // Accommodations
+    // Unterkünfte
     (ev.accommodations||[]).forEach(ac=>{
-      if(!ac.lat||!ac.lon) return;
-      const m=L.marker([parseFloat(ac.lat),parseFloat(ac.lon)],{
-        icon:mkIcon(`<div style="font-size:20px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.3))">H</div>`,24)
-      }).addTo(mapInstance);
-      m.bindPopup(`<strong>${esc(ac.name)||'Unterkunft'}</strong>${ac.addr?'<br>'+esc(ac.addr):''}${ac.cinDate?'<br>Check-in: '+fmtD(ac.cinDate):''}`);
-      markers.push(m);
+      const icon=mkPin('#a4262c',GLYPH_BED);
+      const popup=`<strong>${esc(ac.name)||'Unterkunft'}</strong>${ac.addr?'<br>'+esc(ac.addr):''}${ac.cinDate?'<br>Check-in: '+fmtD(ac.cinDate):''}`;
+      if(ac.lat&&ac.lon){
+        const m=L.marker([parseFloat(ac.lat),parseFloat(ac.lon)],{icon}).addTo(mapInstance);
+        m.bindPopup(popup);
+        markers.push(m);
+      } else if(ac.addr){
+        pending.push({searchQ:ac.addr,icon,popup});
+      }
     });
 
-    // Show known markers immediately; transport geocoding happens below
+    // Bekannte Marker sofort zeigen; alles Weitere wird unten geokodiert
     fitMap();
 
     // Collect relevant transport locations:
@@ -983,7 +1076,6 @@ function openEventMap(evId){
     // Abreise → departure airport/station of the FIRST leg (nearest to the event)
     // Connections/layovers in between are excluded.
     const seen=new Set();
-    const transLocs=[];
     const sortByDep=legs=>[...legs].sort((a,b)=>(a.data?.dep||a.data?.time||'').localeCompare(b.data?.dep||b.data?.time||''));
     PERSONS.forEach(p=>{
       DIRS.forEach(d=>{
@@ -997,36 +1089,34 @@ function openEventMap(evId){
           const q=d==='an'?leg.data.to:leg.data.from;
           if(!q||seen.has(q)) return;
           seen.add(q);
-          transLocs.push({q,icon:'',label:'Flughafen',searchQ:resolveAddr(q)||q});
+          pending.push({searchQ:resolveAddr(q)||q,icon:mkPin('#0f6cbd',GLYPH_PLANE),popup:`<strong>${esc(q)}</strong><br>Flughafen`});
         } else if(leg.type==='zug'&&leg.data){
           const q=d==='an'?leg.data.to:leg.data.from;
           if(!q||seen.has(q)) return;
           seen.add(q);
-          transLocs.push({q,icon:'',label:'Bahnhof',searchQ:q+' Bahnhof'});
+          pending.push({searchQ:q+' Bahnhof',icon:mkPin('#038387',GLYPH_TRAIN),popup:`<strong>${esc(q)}</strong><br>Bahnhof`});
         }
       });
     });
 
-    if(!transLocs.length) return;
+    if(!pending.length) return;
 
-    // Geocode in parallel via Nominatim, then refit
-    await Promise.all(transLocs.map(async loc=>{
+    // Nacheinander geokodieren – Nominatim erlaubt nur eine Anfrage pro Sekunde.
+    const thisMap=mapInstance;
+    for(const loc of pending){
+      if(mapInstance!==thisMap) return;
       try{
-        const url=`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(loc.searchQ)}&format=json&limit=1&accept-language=de`;
-        const resp=await fetch(url);
-        const data=await resp.json();
-        if(!data||!data[0]||!mapInstance) return;
-        const lat=parseFloat(data[0].lat),lon=parseFloat(data[0].lon);
-        if(isNaN(lat)||isNaN(lon)) return;
-        const m=L.marker([lat,lon],{
-          icon:mkIcon(`<div style="font-size:20px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.3))">${loc.icon}</div>`,24)
-        }).addTo(mapInstance);
-        m.bindPopup(`<strong>${loc.icon} ${esc(loc.q)}</strong><br>${esc(loc.label)}`);
+        const pos=await geocodeCached(loc.searchQ);
+        if(!pos||mapInstance!==thisMap) continue;
+        const m=L.marker([pos.lat,pos.lon],{icon:loc.icon}).addTo(mapInstance);
+        m.bindPopup(loc.popup);
+        if(loc.open) m.openPopup();
         markers.push(m);
+        fitMap();
       }catch(e){console.warn('[nous] Kartenmarkierung konnte nicht gesetzt werden',e);}
-    }));
+    }
 
-    if(mapInstance) fitMap();
+    if(mapInstance===thisMap) refit();
   },150);
 }
 
@@ -1797,7 +1887,7 @@ function renderCard(e){
               <div class="card-menu-item" data-action="openPreview" data-ev-id="${e.id}">Vorschau</div>
               <div class="card-menu-item" data-action="openModal" data-ev-id="${e.id}">Bearbeiten</div>
               <div class="card-menu-item" data-action="openExpenseModal" data-ev-id="${e.id}">Ausgabe hinzufügen</div>
-              ${(e.lat&&e.lon)||(e.accommodations&&e.accommodations.some(a=>a.lat))||(e.subevents&&e.subevents.some(s=>s.lat))?`<div class="card-menu-item" data-action="openEventMap" data-ev-id="${e.id}">Karte</div>`:''}
+              ${eventHasMapData(e)?`<div class="card-menu-item" data-action="openEventMap" data-ev-id="${e.id}">Karte</div>`:''}
             </div>
           </div>
         </div>
@@ -3551,7 +3641,7 @@ function openPreview(id){
 
   document.getElementById('pvBody').innerHTML=html;
   hydrateAttachmentImages();
-  const hasMap=(ev.lat&&ev.lon)||(ev.accommodations&&ev.accommodations.some(a=>a.lat))||(ev.subevents&&ev.subevents.some(s=>s.lat));
+  const hasMap=eventHasMapData(ev);
   const pvMapBtn=document.getElementById('pvMapBtn');
   if(pvMapBtn){pvMapBtn.style.display=hasMap?'':'none';if(hasMap)pvMapBtn.dataset.evId=id;}
   document.getElementById('previewModal').classList.add('open');
