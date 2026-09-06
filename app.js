@@ -1617,6 +1617,7 @@ function bulkExport(){showToast('Export wurde deaktiviert');}
 // HELPERS
 function esc(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function safeUrl(url){if(!url)return '';const u=url.trim();return /^https?:\/\//i.test(u)?u:'';}
+function fmtDShort(d){if(!d)return '';const dt=new Date(d+'T00:00:00');if(isNaN(dt))return '';return dt.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'});}
 function fmtD(d){if(!d)return '';const dt=new Date(d+'T00:00:00');const wd=dt.toLocaleDateString('de-DE',{weekday:'short'});return wd+', '+dt.toLocaleDateString('de-DE',{day:'2-digit',month:'short',year:'numeric'});}
 function nowTs(){return new Date().toISOString().replace(/[-:]/g,'').slice(0,15)+'Z';}
 function genId(){return 'ev_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);}
@@ -1771,8 +1772,8 @@ function renderCard(e){
   const cardLegStr=leg=>{
     if(leg.type==='flug'&&leg.data){const f=leg.data;return `${esc(f.num)} ${esc(f.from)}→${esc(f.to)}${f.dep?' · '+esc(f.dep):''}${f.arr?'–'+esc(f.arr):''}`.trim();}
     if(leg.type==='zug'&&leg.data){const t=leg.data;return `${esc(t.num)} ${esc(t.from)}→${esc(t.to)}${t.dep?' · '+esc(t.dep):''}${t.arr?'–'+esc(t.arr):''}`.trim();}
-    if(leg.type==='auto') return [leg.eta?'ETA '+esc(leg.eta):'',leg.note?esc(leg.note):''].filter(Boolean).join(' · ')||'Auto';
-    if(leg.type==='sonstiges') return `⋯ ${esc(leg.note)||''}`;
+    if(leg.type==='auto') return [esc(fmtDShort(leg.data?.date)),leg.eta?'ETA '+esc(leg.eta):'',leg.note?esc(leg.note):''].filter(Boolean).join(' · ')||'Auto';
+    if(leg.type==='sonstiges') return `⋯ ${[esc(fmtDShort(leg.data?.date)),esc(leg.note)].filter(Boolean).join(' · ')}`;
     return '';
   };
   const cardMatchKey=leg=>{
@@ -2532,7 +2533,7 @@ function syncSplitDates(){
 function datesFromTransport(person){
   const legDate=l=>(l&&l.data&&l.data.date)||'';
   const sorted=dir=>collectLegs(person,dir).filter(legDate)
-    .sort((a,b)=>(legDate(a)+(a.data.dep||'')).localeCompare(legDate(b)+(b.data.dep||'')));
+    .sort((a,b)=>(legDate(a)+(a.data.dep||a.eta||'')).localeCompare(legDate(b)+(b.data.dep||b.eta||'')));
   const an=sorted('an'), ab=sorted('ab');
   const from=an.length?legDate(an[an.length-1]):'';
   const to=ab.length?legDate(ab[0]):'';
@@ -3202,8 +3203,9 @@ function addLeg(person, dir, data){
       </div>
     </div>
     <div id="leg_${lid}_other" style="display:${(type==='auto'||type==='sonstiges')?'block':'none'}">
-      <div id="leg_${lid}_auto_eta_row" style="display:${type==='auto'?'flex':'none'}">
-        <div class="form-group"><label>Ankunft (ETA)</label><input type="time" id="leg_${lid}_auto_eta" value="${esc((data&&data.type==='auto'&&data.eta)||'')}"></div>
+      <div class="form-row" style="margin-bottom:7px">
+        <div class="form-group"><label>Datum</label><input type="date" id="leg_${lid}_otherdate" value="${esc((data&&(data.type==='auto'||data.type==='sonstiges')&&data.data&&data.data.date)||'')}"></div>
+        <div class="form-group" id="leg_${lid}_auto_eta_row" style="display:${type==='auto'?'flex':'none'}"><label>Ankunft (ETA)</label><input type="time" id="leg_${lid}_auto_eta" value="${esc((data&&data.type==='auto'&&data.eta)||'')}"></div>
       </div>
       <div class="form-group"><label>Details</label><textarea id="leg_${lid}_note" style="min-height:44px" placeholder="Details…">${esc((data&&(data.type==='auto'||data.type==='sonstiges')&&data.note)||'')}</textarea></div>
     </div>
@@ -3319,6 +3321,9 @@ function collectLegs(person, dir){
         arr:document.getElementById(`leg_${lid}_zugarr`)?.value||''
       };
     } else {
+      // Datum liegt – wie bei Flug/Zug – in obj.data, damit Tagesansicht und
+      // "⇩ Transport" auch Auto-/Sonstiges-Strecken auswerten.
+      obj.data={date:document.getElementById(`leg_${lid}_otherdate`)?.value||''};
       obj.note=document.getElementById(`leg_${lid}_note`)?.value||'';
       if(type==='auto') obj.eta=document.getElementById(`leg_${lid}_auto_eta`)?.value||'';
     }
@@ -3563,7 +3568,7 @@ function openPreview(id){
   const pvLegRow=leg=>{
     if(leg.type==='flug'&&leg.data){const f=leg.data;return (`${esc(f.num)}${f.from&&f.to?' · '+navLink(f.from,f.from)+'→'+navLink(f.to,f.to):''}${f.dep?' · '+esc(f.dep):''}${f.arr?'–'+esc(f.arr):''}`).trim();}
     if(leg.type==='zug'&&leg.data){const t=leg.data;return (`${esc(t.num)}${t.from&&t.to?' · '+navLink(t.from,t.from)+'→'+navLink(t.to,t.to):''}${t.dep?' · '+esc(t.dep):''}${t.arr?'–'+esc(t.arr):''}`).trim();}
-    return [leg.eta?'ETA '+esc(leg.eta):'',leg.note?esc(leg.note):''].filter(Boolean).join(' · ')||'Auto';
+    return [esc(fmtDShort(leg.data?.date)),leg.eta?'ETA '+esc(leg.eta):'',leg.note?esc(leg.note):''].filter(Boolean).join(' · ')||'Auto';
   };
   const pvMatchKey=leg=>{
     if(!leg||!leg.type) return null;
