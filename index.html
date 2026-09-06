@@ -638,6 +638,7 @@ textarea{resize:vertical;min-height:64px}
           <button class="hbtn" data-action="toggleHamburger" id="hamburgerBtn" style="position:relative">☰<span class="invite-badge" id="inviteBadgeBtn" style="display:none">0</span></button>
           <div id="hamburgerMenu" style="display:none;position:absolute;right:0;top:38px;background:#fff;border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-md);min-width:180px;z-index:100;overflow:hidden">
             <div class="ham-item ham-item-new" data-action="openNewModal">+ Neuer Termin</div>
+            <div class="ham-item ham-item-new" data-action="openExpenseModal">+ Ausgabe</div>
             <div class="ham-item ham-item-invites" data-action="openInvites">Einladungen<span class="invite-badge-inline" id="inviteBadgeMenu" style="display:none">0</span></div>
             <div class="ham-item ham-item-pw" data-action="openPwModal">Passwort ändern</div>
             <div class="ham-item ham-item-out" data-action="signOut">Abmelden</div>
@@ -761,6 +762,43 @@ textarea{resize:vertical;min-height:64px}
     <div class="confirm-dialog-btns">
       <button class="btn-secondary" data-action="closeConfirmDialog">Abbrechen</button>
       <button class="btn-danger" id="confirmDialogOk" data-action="confirmDialogOk">Löschen</button>
+    </div>
+  </div>
+</div>
+
+<!-- AUSGABE SCHNELL ERFASSEN -->
+<div class="modal-overlay" id="expenseModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-header">
+      <div class="modal-title">Ausgabe erfassen</div>
+      <div class="modal-close" data-action="closeModal" data-modal="expenseModal">✕</div>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>Betrag (€) *</label><input type="text" id="q_amount" inputmode="decimal" placeholder="0,00"></div>
+        <div class="form-group"><label>Datum</label><input type="date" id="q_date"></div>
+      </div>
+      <div class="form-group"><label>Wofür *</label><input type="text" id="q_desc" placeholder="z.B. Hotel, Tanken, Abendessen"></div>
+      <div class="form-group"><label>Termin *</label><select id="q_event" data-action="syncQuickBearer"></select></div>
+      <div class="form-row">
+        <div class="form-group"><label>Bezahlt von</label>
+          <select id="q_paid">
+            <option value="toja">Toja</option>
+            <option value="johann">Johann</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Getragen von</label>
+          <select id="q_bearer" data-action="markQuickBearerTouched">
+            <option value="beide">Beide</option>
+            <option value="toja">Toja</option>
+            <option value="johann">Johann</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" data-action="closeModal" data-modal="expenseModal">Abbrechen</button>
+      <button class="btn-primary" data-action="saveQuickExpense">Speichern</button>
     </div>
   </div>
 </div>
