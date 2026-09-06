@@ -1296,6 +1296,59 @@ function filtered(){
   return list;
 }
 
+// ── ANWESENHEIT JE PERSON ──────────────────────────────────────────────
+// Ein gemeinsamer Termin kann für Toja und Johann an unterschiedlichen Tagen
+// beginnen und enden (ev.personDates). dateFrom/dateTo bleiben dabei die
+// Klammer über beide Anwesenheiten, damit Listen, Filter und Kalender
+// unverändert mit einem Zeitraum je Termin rechnen können.
+function evRange(ev){
+  const from=ev.dateFrom||ev.date||'';
+  if(!from) return null;
+  return {from,to:ev.dateTo||ev.date||from};
+}
+// true, sobald mindestens eine Person vom Gesamtzeitraum abweicht
+function hasPersonDates(ev){
+  if((ev.owner||'gemeinsam')!=='gemeinsam'||!ev.personDates) return false;
+  const full=evRange(ev);
+  if(!full) return false;
+  return PERSONS.some(p=>{
+    const d=ev.personDates[p];
+    return d&&d.from&&d.to&&(d.from!==full.from||d.to!==full.to);
+  });
+}
+// Zeitraum, in dem `person` bei diesem Termin anwesend ist; null = nicht beteiligt
+function personRange(ev,person){
+  const full=evRange(ev);
+  if(!full) return null;
+  const owner=ev.owner||'gemeinsam';
+  if(owner!=='gemeinsam') return owner===person?full:null;
+  const d=ev.personDates&&ev.personDates[person];
+  return (d&&d.from&&d.to)?{from:d.from,to:d.to}:full;
+}
+function personPresentOn(ev,person,ds){
+  const r=personRange(ev,person);
+  return !!r&&ds>=r.from&&ds<=r.to;
+}
+function presentPersons(ev,ds){return PERSONS.filter(p=>personPresentOn(ev,p,ds));}
+// Überschneidung zweier Termine aus Sicht einer Person; null = keine
+function personOverlap(a,b,person,aRange){
+  const ra=aRange||personRange(a,person), rb=personRange(b,person);
+  if(!ra||!rb) return null;
+  const from=ra.from>rb.from?ra.from:rb.from;
+  const to=ra.to<rb.to?ra.to:rb.to;
+  return from<=to?{from,to}:null;
+}
+function personLabel(p){return p==='toja'?'Toja':'Johann';}
+// Farbige Zeitraumzeile je Person — nur wenn es tatsächlich Abweichungen gibt
+function personDatesHtml(ev){
+  if(!hasPersonDates(ev)) return '';
+  const col={toja:'var(--toja-color)',johann:'var(--johann-color)'};
+  return PERSONS.map(p=>{
+    const r=personRange(ev,p);
+    return `<span style="color:${col[p]};font-weight:700">${personLabel(p)}</span> ${fmtD(r.from)} – ${fmtD(r.to)}`;
+  }).join(' &nbsp;·&nbsp; ');
+}
+
 const CONFLICT_SK='nous_dismissed_conflicts_v1';
 let dismissedConflictKeys=new Set(JSON.parse(localStorage.getItem(CONFLICT_SK)||'[]'));
 let conflictingEventIds=new Set();
@@ -1325,12 +1378,6 @@ function detectConflicts(){
   const listEl=document.getElementById('conflictList');
   if(!banner||!listEl) return;
 
-  function affectedPersons(ev){
-    const o=ev.owner||'gemeinsam';
-    if(o==='gemeinsam') return ['toja','johann'];
-    return [o];
-  }
-
   const today=todayStr();
 
   // Only true multi-day events (at least 2 distinct days) that are not fully in the past
@@ -1356,10 +1403,12 @@ function detectConflicts(){
   Object.entries(dateMap).forEach(([date,evs])=>{
     if(evs.length<2) return;
     const conflicting=new Set();
+    // Anwesenheit einmal je Termin bestimmen, nicht in jedem Paarvergleich
+    const present=new Map(evs.map(ev=>[ev,presentPersons(ev,date)]));
     for(let i=0;i<evs.length;i++){
       for(let j=i+1;j<evs.length;j++){
-        const pA=affectedPersons(evs[i]);
-        const pB=affectedPersons(evs[j]);
+        const pA=present.get(evs[i]), pB=present.get(evs[j]);
+        // Kollision nur, wenn dieselbe Person an diesem Tag bei beiden da ist
         if(pA.some(p=>pB.includes(p))){ conflicting.add(evs[i]); conflicting.add(evs[j]); }
       }
     }
@@ -1523,6 +1572,7 @@ function effectiveStatus(e){
 function renderCard(e){
   const isM=e.multiday;
   const ds=isM?`${fmtD(e.dateFrom)} – ${fmtD(e.dateTo)}`:fmtD(e.date);
+  const ppHtml=personDatesHtml(e);
   const ts=(!e.allday&&e.time)?e.time+' Uhr':'Ganztägig';
   const sel=selIds.has(e.id);
   const effStatus=effectiveStatus(e);
@@ -1658,6 +1708,7 @@ function renderCard(e){
           <span>${ds}</span>
           ${!isM?`<span>${ts}</span>`:''}
         </div>
+        ${ppHtml?`<div class="card-meta" style="margin-top:2px;font-size:0.72rem">${ppHtml}</div>`:''}
         ${e.location?`<div class="card-meta" style="margin-top:2px">${navLink(e.location)}</div>`:''}
       </div>
       <div class="card-right">
@@ -1777,10 +1828,16 @@ function renderCal(){
     barsOnCell.forEach(b=>{
       const isStart=ci===b.sc,isEnd=ci===b.ec,isSolo=isStart&&isEnd;
       const isRowStart=ci%7===0&&ci>b.sc;
-      const cls=`cal-bar-segment bar-ow-${b.ev.owner||'gemeinsam'}${isSolo?' bar-solo':isStart?' bar-start':isEnd?' bar-end':isRowStart?' bar-row-start':''}`;
+      // Tagesgenaue Einfärbung: gemeinsame Tage grün, Alleintage in Personenfarbe
+      const present=presentPersons(b.ev,ds);
+      const owner=b.ev.owner||'gemeinsam';
+      const segCls=owner!=='gemeinsam'?`bar-ow-${owner}`
+        :present.length===1?`bar-ow-${present[0]}`
+        :present.length===0?'bar-absent':'bar-ow-gemeinsam';
+      const cls=`cal-bar-segment ${segCls}${isSolo?' bar-solo':isStart?' bar-start':isEnd?' bar-end':isRowStart?' bar-row-start':''}`;
       const top=26+b.row*16;
       const label=(isStart||isRowStart)?`<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;display:block">${esc(b.ev.title)||SL[b.ev.status]||''}</span>`:`<span></span>`;
-      barsHtml+=`<div class="${cls}" style="position:absolute;top:${top}px;left:${isStart||isRowStart?'2px':'0'};right:${isEnd?'2px':'0'};pointer-events:auto;overflow:hidden" data-action="showCalDay" data-day="${ds}" title="${esc(b.ev.title)}">${label}</div>`;
+      barsHtml+=`<div class="${cls}" style="position:absolute;top:${top}px;left:${isStart||isRowStart?'2px':'0'};right:${isEnd?'2px':'0'};pointer-events:auto;overflow:hidden" data-action="showCalDay" data-day="${ds}" title="${esc(b.ev.title)}${hasPersonDates(b.ev)?' · '+esc(present.length?present.map(personLabel).join(' + '):'niemand anwesend'):''}">${label}</div>`;
     });
     const hasBar=barsHtml.length>0;
     // Cell height: bars + holiday row below (14px) when shown, otherwise normal padding
@@ -1821,18 +1878,6 @@ function updateInviteBadge(){
   });
 }
 
-function eventsOverlap(a, b){
-  const aFrom=a.dateFrom||a.date, aTo=a.dateTo||a.date;
-  const bFrom=b.dateFrom||b.date, bTo=b.dateTo||b.date;
-  if(!aFrom||!bFrom) return false;
-  return aFrom<=bTo&&aTo>=bFrom;
-}
-// Last day both events share — used to ignore conflicts that lie entirely in the past
-function overlapEnd(a, b){
-  const aTo=a.dateTo||a.date||'', bTo=b.dateTo||b.date||'';
-  return aTo<bTo?aTo:bTo;
-}
-
 function renderInvites(){
   const feed=document.getElementById('invitesFeed');
   if(!feed) return;
@@ -1846,12 +1891,18 @@ function renderInvites(){
     const inv=ev.invite;
     const fromName=inv.from==='toja'?'Toja':'Johann';
     const ds=ev.multiday?`${fmtD(ev.dateFrom)} – ${fmtD(ev.dateTo)}`:fmtD(ev.date);
-    // Conflict detection: other events of the invited person on the same dates (future only)
+    // Konfliktprüfung aus Sicht der eingeladenen Person: es zählen nur Tage, an
+    // denen sie bei beiden Terminen anwesend wäre — und nur solche in der Zukunft.
     const today=todayStr();
-    const conflicts=events.filter(e=>e.id!==ev.id&&(e.owner===currentUser||e.owner==='gemeinsam')&&eventsOverlap(e,ev)&&overlapEnd(e,ev)>=today);
+    const inviteeRange=personRange(ev,currentUser)||evRange(ev);
+    const conflicts=events.map(e=>{
+      if(e.id===ev.id) return null;
+      const ov=personOverlap(ev,e,currentUser,inviteeRange);
+      return (ov&&ov.to>=today)?{ev:e,ov}:null;
+    }).filter(Boolean);
     const conflictHtml=conflicts.length?`<div class="invite-conflict">
       <div class="invite-conflict-title">Terminierungskonflikt (${conflicts.length})</div>
-      ${conflicts.map(c=>`<div class="invite-conflict-item">· ${esc(c.title)} – ${c.multiday?fmtD(c.dateFrom):fmtD(c.date)}</div>`).join('')}
+      ${conflicts.map(({ev:c,ov})=>`<div class="invite-conflict-item">· ${esc(c.title)} – ${ov.from===ov.to?fmtD(ov.from):fmtD(ov.from)+' – '+fmtD(ov.to)}</div>`).join('')}
     </div>`:'';
     if(inv.status==='accepted'){
       return `<div class="invite-card">
@@ -1960,6 +2011,9 @@ function resetForm(){
   document.getElementById('attList').innerHTML='';
   document.getElementById('accomContainer').innerHTML='';
   const fInvite=document.getElementById('f_invite');if(fInvite){fInvite.checked=false;fInvite.disabled=false;}
+  const fSplit=document.getElementById('f_splitDates');if(fSplit)fSplit.checked=false;
+  PERSONS.forEach(p=>['f_from_','f_to_'].forEach(pre=>{const el=document.getElementById(pre+p);if(el)el.value='';}));
+  togglePerPersonDates();
   autoDetectMultiday();toggleAllday();
   syncOwnerRestrictions();
 }
@@ -1993,6 +2047,19 @@ function populateForm(ev){
   }));
   autoDetectMultiday();toggleAllday();
   syncOwnerRestrictions();
+  // Populate per-person arrival/departure
+  const fSplit=document.getElementById('f_splitDates');
+  if(fSplit){
+    const pd=ev.personDates;
+    const on=!!(pd&&PERSONS.every(p=>pd[p]&&pd[p].from&&pd[p].to));
+    fSplit.checked=on;
+    PERSONS.forEach(p=>{
+      const f=document.getElementById(`f_from_${p}`), t=document.getElementById(`f_to_${p}`);
+      if(f) f.value=on?pd[p].from:'';
+      if(t) t.value=on?pd[p].to:'';
+    });
+    togglePerPersonDates();
+  }
   // Populate invite state
   const fInvite=document.getElementById('f_invite');
   if(fInvite){
@@ -2011,8 +2078,68 @@ function autoDetectMultiday(){
   const to=document.getElementById('f_dateTo').value;
   const isM=!!(to&&to>from);
   document.getElementById('singleDate').style.display=isM?'none':'block';
+  updatePerPersonVisibility();
 }
 function toggleAllday(){document.getElementById('timeGroup').style.display=document.getElementById('f_allday').checked?'none':'block';}
+
+// ── ABWEICHENDE AN-/ABREISE JE PERSON (Formular) ────────────────────────
+// Nur sinnvoll bei mehrtägigen, gemeinsamen Terminen: bei einem Einzeltag oder
+// einem Termin für nur eine Person gibt es nichts zu unterscheiden.
+function updatePerPersonVisibility(){
+  const sec=document.getElementById('perPersonDatesSection');
+  if(!sec) return;
+  const owner=document.getElementById('f_owner')?.value||'gemeinsam';
+  const from=document.getElementById('f_dateFrom')?.value||'';
+  const to=document.getElementById('f_dateTo')?.value||'';
+  // Nicht abwählen, nur ausblenden — beim Wiederherstellen des Zeitraums
+  // stehen die Eingaben dann noch. Gespeichert wird nur, was sichtbar gilt.
+  sec.style.display=(owner==='gemeinsam'&&to&&to>from)?'':'none';
+}
+function togglePerPersonDates(){
+  const on=!!document.getElementById('f_splitDates')?.checked;
+  const box=document.getElementById('perPersonDatesFields');
+  if(box) box.style.display=on?'':'none';
+  if(!on) return;
+  const from=document.getElementById('f_dateFrom')?.value||'';
+  const to=document.getElementById('f_dateTo')?.value||from;
+  PERSONS.forEach(p=>{
+    const f=document.getElementById(`f_from_${p}`), t=document.getElementById(`f_to_${p}`);
+    if(f&&!f.value) f.value=from;
+    if(t&&!t.value) t.value=to;
+  });
+}
+// Der Gesamtzeitraum ist die Klammer über beide Anwesenheiten und wird
+// mitgezogen, sobald jemand früher anreist oder später abreist.
+function syncSplitDates(){
+  if(!document.getElementById('f_splitDates')?.checked) return;
+  const fromEl=document.getElementById('f_dateFrom'), toEl=document.getElementById('f_dateTo');
+  if(!fromEl||!toEl) return;
+  let min=fromEl.value, max=toEl.value||fromEl.value;
+  PERSONS.forEach(p=>{
+    const f=document.getElementById(`f_from_${p}`)?.value||'';
+    const t=document.getElementById(`f_to_${p}`)?.value||'';
+    if(f&&(!min||f<min)) min=f;
+    if(t&&(!max||t>max)) max=t;
+  });
+  if(min&&min!==fromEl.value) fromEl.value=min;
+  if(max&&min&&max>min&&max!==toEl.value) toEl.value=max;
+  autoDetectMultiday();syncSubDates();
+}
+// Übernimmt Ankunfts-/Abreisetag aus den erfassten Transport-Teilstrecken:
+// Ankunft = letzte Teilstrecke der Anreise, Abreise = erste der Abreise.
+function datesFromTransport(person){
+  const legDate=l=>(l&&l.data&&l.data.date)||'';
+  const sorted=dir=>collectLegs(person,dir).filter(legDate)
+    .sort((a,b)=>(legDate(a)+(a.data.dep||'')).localeCompare(legDate(b)+(b.data.dep||'')));
+  const an=sorted('an'), ab=sorted('ab');
+  const from=an.length?legDate(an[an.length-1]):'';
+  const to=ab.length?legDate(ab[0]):'';
+  if(!from&&!to){showToast(`Kein Transport mit Datum für ${personLabel(person)} hinterlegt`);return;}
+  if(from){const el=document.getElementById(`f_from_${person}`);if(el)el.value=from;}
+  if(to){const el=document.getElementById(`f_to_${person}`);if(el)el.value=to;}
+  syncSplitDates();
+  showToast(`An-/Abreise ${personLabel(person)} aus Transport übernommen`);
+}
 function toggleLegType(legId){
   const val=document.getElementById(`leg_${legId}_type`).value;
   const fl=document.getElementById(`leg_${legId}_flug`);
@@ -2070,6 +2197,7 @@ function syncOwnerRestrictions(){
 
   // Update existing todo selects in the main form
   document.querySelectorAll('#todosContainer .todo-owner-select').forEach(sel=>restrictTodoSelect(sel,owner));
+  updatePerPersonVisibility();
   // Show/hide invite section (only for single-owner events)
   const inviteSec=document.getElementById('inviteSection');
   const inviteLabel=document.getElementById('inviteLabel');
@@ -2689,9 +2817,25 @@ async function saveEvent(){
   const title=document.getElementById('f_title').value.trim();
   if(!title){showToast('Bitte Titel eingeben');return;}
   if(!syncGuard()) return;
-  const dateFrom=document.getElementById('f_dateFrom').value;
-  const dateTo=document.getElementById('f_dateTo').value;
+  let dateFrom=document.getElementById('f_dateFrom').value;
+  let dateTo=document.getElementById('f_dateTo').value;
   const isM=!!(dateTo&&dateTo>dateFrom);
+  // Abweichende An-/Abreise: nur bei mehrtägigen, gemeinsamen Terminen
+  const splitOn=isM&&document.getElementById('f_owner').value==='gemeinsam'&&!!document.getElementById('f_splitDates')?.checked;
+  let personDates=null;
+  if(splitOn){
+    personDates={};
+    for(const p of PERSONS){
+      const f=document.getElementById(`f_from_${p}`)?.value||'';
+      const t=document.getElementById(`f_to_${p}`)?.value||'';
+      if(!f||!t){showToast(`Bitte An- und Abreise für ${personLabel(p)} angeben`);return;}
+      if(t<f){showToast(`${personLabel(p)}: Abreise liegt vor der Anreise`);return;}
+      personDates[p]={from:f,to:t};
+      // Der Gesamtzeitraum muss beide Anwesenheiten umschließen
+      if(f<dateFrom) dateFrom=f;
+      if(t>dateTo) dateTo=t;
+    }
+  }
   const existing=editId?events.find(e=>e.id===editId):null;
   const wasEdit=!!editId;
   const evId=editId||genId();
@@ -2732,8 +2876,8 @@ async function saveEvent(){
     subevents:collectSubs(),
     updatedAt:new Date().toISOString()
   };
-  if(isM){ev.dateFrom=dateFrom;ev.dateTo=dateTo;}
-  else{ev.date=dateFrom;ev.time=document.getElementById('f_time').value;}
+  if(isM){ev.dateFrom=dateFrom;ev.dateTo=dateTo;ev.personDates=personDates;}
+  else{ev.date=dateFrom;ev.time=document.getElementById('f_time').value;ev.personDates=null;}
   // Invite handling
   const fInvite=document.getElementById('f_invite');
   const inviteChecked=fInvite&&fInvite.checked&&ev.owner!=='gemeinsam';
@@ -2767,6 +2911,7 @@ async function saveEvent(){
       if((existing.date||existing.dateFrom)!==(ev.date||ev.dateFrom)) changes.push('Datum geändert');
       if(existing.location!==ev.location) changes.push('Ort geändert');
       if(existing.title!==ev.title) changes.push(`Titel: „${existing.title}" → „${ev.title}"`);
+      if(JSON.stringify(existing.personDates||null)!==JSON.stringify(ev.personDates||null)) changes.push('An-/Abreise je Person geändert');
       if(JSON.stringify(existing.transport)!==JSON.stringify(ev.transport)) changes.push('Transport geändert');
       if(JSON.stringify(existing.todos)!==JSON.stringify(ev.todos)) changes.push('To-dos geändert');
       if(JSON.stringify(existing.subevents)!==JSON.stringify(ev.subevents)) changes.push('Subevents geändert');
@@ -2835,6 +2980,7 @@ function openPreview(id){
   <div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px">
     <div class="pv-grid">
       <div class="pv-row${ev.multiday?' full':''}"><div class="pv-label">Datum</div><div class="pv-val">${ds}</div></div>
+      ${hasPersonDates(ev)?`<div class="pv-row full"><div class="pv-label">Anwesenheit</div><div class="pv-val">${personDatesHtml(ev)}</div></div>`:''}
       ${!ev.multiday?`<div class="pv-row"><div class="pv-label">Uhrzeit</div><div class="pv-val">${ts}</div></div>`:''}
       ${ev.location?`<div class="pv-row full"><div class="pv-label">Ort</div><div class="pv-val">${navLink(ev.location,'','wrap')}</div></div>`:''}
     </div>
@@ -2988,6 +3134,7 @@ document.addEventListener('click', e=>{
     case 'toggleFilter': toggleFilter(t.dataset.filter,t); break;
     case 'toggleTimeFilter': toggleTimeFilter(t.dataset.filter); break;
     // Banners / nav
+    case 'datesFromTransport': datesFromTransport(t.dataset.person); break;
     case 'dismissConflictBanner': dismissConflictBanner(); break;
     case 'dismissConflict': e.stopPropagation(); dismissConflict(t.dataset.key); break;
     case 'calPrev': calPrev(); break;
@@ -3071,6 +3218,8 @@ document.addEventListener('change', e=>{
   const a=t.dataset.action;
   if(a==='toggleLegType') toggleLegType(t.dataset.lid);
   else if(a==='updateTodoOwnerStyle') updateTodoOwnerStyle(t);
+  else if(a==='togglePerPersonDates') togglePerPersonDates();
+  else if(a==='syncSplitDates') syncSplitDates();
 });
 
 document.addEventListener('input', e=>{

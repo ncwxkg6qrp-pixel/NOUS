@@ -303,6 +303,7 @@ header{background:var(--blue2);padding:0 16px;box-shadow:0 2px 4px rgba(0,0,0,0.
 .cal-bar-segment.bar-ow-toja{background:var(--toja-color)}
 .cal-bar-segment.bar-ow-johann{background:var(--johann-color)}
 .cal-bar-segment.bar-ow-gemeinsam{background:var(--green)}
+.cal-bar-segment.bar-absent{background:var(--border2);color:var(--text3)}
 .cal-bar-segment.bar-start{border-radius:6px 0 0 6px;margin-left:2px}
 .cal-bar-segment.bar-end{border-radius:0 6px 6px 0;margin-right:2px}
 .cal-bar-segment.bar-solo{border-radius:6px;margin:0 2px}
@@ -796,6 +797,25 @@ textarea{resize:vertical;min-height:64px}
       <div class="form-row" style="margin-bottom:8px">
         <div class="form-group"><label>Von *</label><input type="date" id="f_dateFrom"></div>
         <div class="form-group"><label>Bis <span style="font-weight:400;text-transform:none;letter-spacing:0">(mehrtägig)</span></label><input type="date" id="f_dateTo"></div>
+      </div>
+      <div id="perPersonDatesSection" style="display:none">
+        <div style="display:flex;align-items:center;gap:10px;padding:2px 0 8px">
+          <label class="toggle"><input type="checkbox" id="f_splitDates" data-action="togglePerPersonDates"><span class="toggle-slider"></span></label>
+          <span class="toggle-label">Unterschiedliche An-/Abreise je Person</span>
+        </div>
+        <div id="perPersonDatesFields" style="display:none;margin-bottom:8px">
+          <div style="display:flex;align-items:flex-end;gap:6px;margin-bottom:8px">
+            <div class="form-group" style="flex:1;margin-bottom:0"><label style="color:var(--toja-color)">Toja: von</label><input type="date" id="f_from_toja" data-action="syncSplitDates"></div>
+            <div class="form-group" style="flex:1;margin-bottom:0"><label style="color:var(--toja-color)">bis</label><input type="date" id="f_to_toja" data-action="syncSplitDates"></div>
+            <button type="button" class="btn-secondary" data-action="datesFromTransport" data-person="toja" style="font-size:0.72rem;padding:0 10px;min-height:36px;border-radius:8px;flex-shrink:0;white-space:nowrap" title="An-/Abreisetag aus dem Transport von Toja übernehmen">⇩ Transport</button>
+          </div>
+          <div style="display:flex;align-items:flex-end;gap:6px;margin-bottom:6px">
+            <div class="form-group" style="flex:1;margin-bottom:0"><label style="color:var(--johann-color)">Johann: von</label><input type="date" id="f_from_johann" data-action="syncSplitDates"></div>
+            <div class="form-group" style="flex:1;margin-bottom:0"><label style="color:var(--johann-color)">bis</label><input type="date" id="f_to_johann" data-action="syncSplitDates"></div>
+            <button type="button" class="btn-secondary" data-action="datesFromTransport" data-person="johann" style="font-size:0.72rem;padding:0 10px;min-height:36px;border-radius:8px;flex-shrink:0;white-space:nowrap" title="An-/Abreisetag aus dem Transport von Johann übernehmen">⇩ Transport</button>
+          </div>
+          <div style="font-size:0.7rem;color:var(--text3);margin-bottom:8px">Von/Bis oben umfasst automatisch beide Anwesenheiten.</div>
+        </div>
       </div>
       <div id="singleDate">
         <div class="form-row">
