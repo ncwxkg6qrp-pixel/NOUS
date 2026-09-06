@@ -31,6 +31,12 @@ const T_ATTMIG = 'nous_attachment_migration';
 // Anhänge liegen im Storage, nicht im Termin-JSON: Base64-Fotos hatten die
 // Termin-Zeile auf 17 MB aufgebläht und damit jeden Sync-Vorgang lahmgelegt.
 const BUCKET = 'attachments';
+// Zahlungen gehören zu keinem Termin. Sie liegen deshalb in einer
+// reservierten Zeile derselben Tabelle statt in einer eigenen — eine neue
+// Tabelle hätte eine Migration samt RLS-Regeln auf der laufenden Datenbank
+// verlangt. Die Zeile wird beim Laden herausgefiltert und erreicht die
+// Terminlisten nie.
+const LEDGER_ID = '__ledger__';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     persistSession: true,
@@ -47,7 +53,7 @@ const SCB={blocker:'s-blocker',save:'s-save',zugesagt:'s-zugesagt',teilweise:'s-
 const OL={gemeinsam:'Gemeinsam',toja:'Toja',johann:'Johann'};
 const OC={gemeinsam:'ob-gemeinsam',toja:'ob-toja',johann:'ob-johann'};
 const PERSONS=['toja','johann'], DIRS=['an','ab'];
-let events=[],editId=null,pendingAtt=[],pvId=null,selIds=new Set(),bulkMode=false,calY,calM,subCnt=0,todoCnt=0;
+let events=[],payments=[],editId=null,pendingAtt=[],pvId=null,selIds=new Set(),bulkMode=false,calY,calM,subCnt=0,todoCnt=0;
 let notesQuill=null;
 
 // Airport IATA → address mapping
@@ -580,10 +586,23 @@ function slimAttachments(list){
     return o;
   });
 }
+const PAY_SK='nous_payments_v1';
 function cacheEvents(){
   try{
     localStorage.setItem(SK,JSON.stringify(events.map(ev=>Object.assign({},ev,{attachments:slimAttachments(ev.attachments)}))));
+    localStorage.setItem(PAY_SK,JSON.stringify(payments));
   }catch(e){console.warn('[nous] Events konnten nicht lokal zwischengespeichert werden',e);}
+}
+function readPaymentsRow(r){
+  const list=r&&r.data&&r.data.payments;
+  return Array.isArray(list)?list:[];
+}
+async function persistPayments(){
+  if(!remoteReady) return false;
+  const{error}=await sb.from(T_EVENT).upsert({id:LEDGER_ID,data:{ledger:true,payments},updated_by:currentUser||null});
+  if(error){reportSyncError('Zahlung konnte nicht gespeichert werden',error);return false;}
+  setSyncState(true);
+  return true;
 }
 
 function rowToEvent(r){return Object.assign({},r.data,{id:r.id,updatedAt:r.updated_at});}
@@ -599,6 +618,7 @@ function renderEverything(){
   renderAktuellIfActive();
   try{if(document.getElementById('view-todos').classList.contains('active'))renderTodos();}catch(e){console.warn('[nous] renderTodos fehlgeschlagen',e);}
   try{if(document.getElementById('view-invites').classList.contains('active'))renderInvites();}catch(e){console.warn('[nous] renderInvites fehlgeschlagen',e);}
+  try{if(document.getElementById('view-kosten').classList.contains('active'))renderKosten();}catch(e){console.warn('[nous] renderKosten fehlgeschlagen',e);}
   updateInviteBadge();
   hydrateAttachmentImages();
 }
@@ -626,13 +646,16 @@ async function persistEventDeleted(id){
 async function loadEventsFromSupabase(){
   const{data,error}=await sb.from(T_EVENT).select('id,data,updated_at,deleted');
   if(error){reportSyncError('Termine konnten nicht geladen werden',error,true);return false;}
-  events=(data||[]).filter(r=>!r.deleted).map(rowToEvent);
+  const rows=(data||[]).filter(r=>!r.deleted);
+  payments=readPaymentsRow(rows.find(r=>r.id===LEDGER_ID));
+  events=rows.filter(r=>r.id!==LEDGER_ID).map(rowToEvent);
   cacheEvents();
   return true;
 }
 
 // Der Server ist die Wahrheit: eingehende Zeilen werden unverändert übernommen.
 function applyEventRow(r){
+  if(r.id===LEDGER_ID){payments=r.deleted?[]:readPaymentsRow(r);return true;}
   const i=events.findIndex(e=>e.id===r.id);
   if(r.deleted){if(i<0)return false;events.splice(i,1);return true;}
   const ev=rowToEvent(r);
@@ -697,6 +720,7 @@ function subscribeRealtime(){
 
 async function loadData(){
   try{const l=localStorage.getItem(SK);if(l)events=JSON.parse(l);}catch(e){console.warn('[nous] localStorage Fehler',e);}
+  try{const l=localStorage.getItem(PAY_SK);if(l)payments=JSON.parse(l);}catch(e){console.warn('[nous] localStorage Fehler',e);}
   renderAll();renderCal();renderAktuell();updateInviteBadge();
   const[evOk]=await Promise.all([loadEventsFromSupabase(),loadActivityFromSupabase()]);
   remoteReady=evOk;
@@ -770,15 +794,15 @@ function renderTodos(){
 }
 
 const FILTER_TABS=new Set(['overview','todos']);
-const TABS_ORDER=['aktuell','calendar','todos','overview'];
+const TABS_ORDER=['aktuell','calendar','todos','overview','kosten'];
 let timeFilter='all';
 let currentTab='aktuell';
 
 function switchTab(n,el){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-  if(el) el.classList.add('active');
-  else{const te=document.querySelector(`[data-tab="${n}"]`);if(te)te.classList.add('active');}
+  if(el&&el.classList.contains('tab')) el.classList.add('active');
+  else{const te=document.querySelector(`.tab[data-tab="${n}"]`);if(te)te.classList.add('active');}
   document.getElementById('view-'+n).classList.add('active');
   currentTab=n;
   const toolbar=document.getElementById('filterToolbar');
@@ -788,6 +812,7 @@ function switchTab(n,el){
   if(n==='calendar') renderCal();
   else if(n==='aktuell') renderAktuell();
   else if(n==='todos') renderTodos();
+  else if(n==='kosten') renderKosten();
   else renderAll();
 }
 
@@ -1223,6 +1248,20 @@ function renderAktuell(){
   }
   html+=`</div>`;
 
+  // Section: Kosten — nur der Saldo, Details im eigenen Tab
+  const aktOpen=openPositions();
+  if(aktOpen.length||payments.length){
+    const aktBal=totalBalanceCents();
+    html+=`<div class="aktuell-section"><div class="aktuell-section-title">Kosten</div>
+      <div class="bal-card" style="margin-bottom:0">
+        <div>
+          <div class="bal-amount ${balanceClass(aktBal)}">${balanceText(aktBal)}</div>
+          <div style="font-size:0.72rem;color:var(--text3);margin-top:3px">${aktOpen.length} ${aktOpen.length===1?'Position':'Positionen'} · ${fmtEur(sumTotal(aktOpen.map(x=>x.exp)))} Kosten</div>
+        </div>
+        <button class="btn-secondary" data-action="switchTab" data-tab="kosten" style="font-size:0.78rem;padding:0 14px;min-height:38px;border-radius:8px;white-space:nowrap">Details</button>
+      </div></div>`;
+  }
+
   // Section: Updates
   html+=`<div class="aktuell-section"><div class="aktuell-section-title">Updates</div>`;
   if(!recentActs.length){
@@ -1296,6 +1335,136 @@ function filtered(){
   return list;
 }
 
+// ── KOSTEN / AUSLAGEN ──────────────────────────────────────────────────
+// Je Position wird festgehalten, wer verauslagt hat (paidBy) und wer die
+// Kosten trägt (bearer: beide je zur Hälfte, oder eine Person allein).
+// Erst daraus ergibt sich der Saldo — wer wem wie viel schuldet.
+// Beträge stehen in Euro; gerechnet wird durchgehend in Cent, damit sich
+// keine Rundungsfehler aufsummieren.
+function parseAmount(str){
+  if(str==null) return NaN;
+  const t=String(str).replace(/[€\s]/g,'').replace(/\.(?=\d{3}(\D|$))/g,'').replace(',','.');
+  if(!t) return NaN;
+  return /^-?\d+(\.\d+)?$/.test(t)?parseFloat(t):NaN;
+}
+function expCents(e){
+  const n=Number(e&&e.amount);
+  return Number.isFinite(n)?Math.round(n*100):0;
+}
+function fmtEur(cents){
+  return (cents/100).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';
+}
+// Anteil, den `person` an dieser Position zu tragen hat (in Cent)
+function expShareCents(e,person){
+  const c=expCents(e);
+  const bearer=e.bearer||'beide';
+  if(bearer==='beide'){
+    const half=Math.round(c/2);
+    return person==='johann'?half:c-half;
+  }
+  return bearer===person?c:0;
+}
+// Saldo dieser Position: positiv = Johann schuldet Toja, negativ = umgekehrt
+function expBalanceCents(e){
+  const c=expCents(e);
+  if(!c) return 0;
+  if(e.paidBy==='toja') return expShareCents(e,'johann');
+  if(e.paidBy==='johann') return -expShareCents(e,'toja');
+  return 0;
+}
+function eventExpenses(ev){return Array.isArray(ev.expenses)?ev.expenses:[];}
+// Alle Positionen über alle Termine, jeweils mit ihrem Termin
+function allExpenses(){
+  const out=[];
+  events.forEach(ev=>eventExpenses(ev).forEach(exp=>out.push({ev,exp})));
+  return out;
+}
+function sumBalance(list){return list.reduce((s,e)=>s+expBalanceCents(e),0);}
+function sumTotal(list){return list.reduce((s,e)=>s+expCents(e),0);}
+// Eine Zahlung von Johann an Toja verringert Johanns Schuld und umgekehrt
+function paymentCents(p){
+  const n=Number(p&&p.amount);
+  return Number.isFinite(n)?Math.round(n*100):0;
+}
+function paymentBalanceCents(p){
+  const c=paymentCents(p);
+  return p.from==='johann'?-c:c;
+}
+function paymentsBalance(list){return (list||[]).reduce((s,p)=>s+paymentBalanceCents(p),0);}
+// Positionen, die in den Saldo eingehen. settledAt stammt aus der früheren
+// Alles-oder-nichts-Abrechnung; solche Posten gelten als erledigt.
+function openPositions(){return allExpenses().filter(x=>expCents(x.exp)&&!x.exp.settledAt);}
+function totalBalanceCents(){
+  return sumBalance(openPositions().map(x=>x.exp))+paymentsBalance(payments);
+}
+function paymentDirText(p){
+  return p.from==='johann'?'Johann → Toja':'Toja → Johann';
+}
+// Datum, unter dem eine Position zeitlich einsortiert wird
+function expenseDate(ev,exp){return (exp&&exp.date)||evPrimaryDate(ev)||'';}
+function lastPaymentDate(){
+  return payments.reduce((m,p)=>(p.date&&p.date>m)?p.date:m,'');
+}
+function balanceText(cents){
+  if(cents===0) return 'Ausgeglichen';
+  return cents>0?`Johann schuldet Toja ${fmtEur(cents)}`:`Toja schuldet Johann ${fmtEur(-cents)}`;
+}
+function balanceClass(cents){return cents===0?'bal-even':cents>0?'bal-toja':'bal-johann';}
+const BEARER_LABEL={beide:'beide je zur Hälfte',toja:'Toja allein',johann:'Johann allein'};
+
+// ── ANWESENHEIT JE PERSON ──────────────────────────────────────────────
+// Ein gemeinsamer Termin kann für Toja und Johann an unterschiedlichen Tagen
+// beginnen und enden (ev.personDates). dateFrom/dateTo bleiben dabei die
+// Klammer über beide Anwesenheiten, damit Listen, Filter und Kalender
+// unverändert mit einem Zeitraum je Termin rechnen können.
+function evRange(ev){
+  const from=ev.dateFrom||ev.date||'';
+  if(!from) return null;
+  return {from,to:ev.dateTo||ev.date||from};
+}
+// true, sobald mindestens eine Person vom Gesamtzeitraum abweicht
+function hasPersonDates(ev){
+  if((ev.owner||'gemeinsam')!=='gemeinsam'||!ev.personDates) return false;
+  const full=evRange(ev);
+  if(!full) return false;
+  return PERSONS.some(p=>{
+    const d=ev.personDates[p];
+    return d&&d.from&&d.to&&(d.from!==full.from||d.to!==full.to);
+  });
+}
+// Zeitraum, in dem `person` bei diesem Termin anwesend ist; null = nicht beteiligt
+function personRange(ev,person){
+  const full=evRange(ev);
+  if(!full) return null;
+  const owner=ev.owner||'gemeinsam';
+  if(owner!=='gemeinsam') return owner===person?full:null;
+  const d=ev.personDates&&ev.personDates[person];
+  return (d&&d.from&&d.to)?{from:d.from,to:d.to}:full;
+}
+function personPresentOn(ev,person,ds){
+  const r=personRange(ev,person);
+  return !!r&&ds>=r.from&&ds<=r.to;
+}
+function presentPersons(ev,ds){return PERSONS.filter(p=>personPresentOn(ev,p,ds));}
+// Überschneidung zweier Termine aus Sicht einer Person; null = keine
+function personOverlap(a,b,person,aRange){
+  const ra=aRange||personRange(a,person), rb=personRange(b,person);
+  if(!ra||!rb) return null;
+  const from=ra.from>rb.from?ra.from:rb.from;
+  const to=ra.to<rb.to?ra.to:rb.to;
+  return from<=to?{from,to}:null;
+}
+function personLabel(p){return p==='toja'?'Toja':'Johann';}
+// Farbige Zeitraumzeile je Person — nur wenn es tatsächlich Abweichungen gibt
+function personDatesHtml(ev){
+  if(!hasPersonDates(ev)) return '';
+  const col={toja:'var(--toja-color)',johann:'var(--johann-color)'};
+  return PERSONS.map(p=>{
+    const r=personRange(ev,p);
+    return `<span style="color:${col[p]};font-weight:700">${personLabel(p)}</span> ${fmtD(r.from)} – ${fmtD(r.to)}`;
+  }).join(' &nbsp;·&nbsp; ');
+}
+
 const CONFLICT_SK='nous_dismissed_conflicts_v1';
 let dismissedConflictKeys=new Set(JSON.parse(localStorage.getItem(CONFLICT_SK)||'[]'));
 let conflictingEventIds=new Set();
@@ -1303,6 +1472,7 @@ let conflictingEventIds=new Set();
 function saveDismissedConflicts(){
   try{localStorage.setItem(CONFLICT_SK,JSON.stringify([...dismissedConflictKeys]));}catch(e){}
 }
+function todayStr(){return _ds(new Date());}
 function conflictKey(date,evs){return date+'::'+evs.map(e=>e.id).sort().join(',');}
 function dismissConflict(key){
   dismissedConflictKeys.add(key);
@@ -1324,23 +1494,22 @@ function detectConflicts(){
   const listEl=document.getElementById('conflictList');
   if(!banner||!listEl) return;
 
-  function affectedPersons(ev){
-    const o=ev.owner||'gemeinsam';
-    if(o==='gemeinsam') return ['toja','johann'];
-    return [o];
-  }
+  const today=todayStr();
 
-  // Only true multi-day events (at least 2 distinct days) participate in conflict detection
-  const multiEvs=events.filter(ev=>ev.multiday&&ev.dateFrom&&ev.dateTo&&ev.dateTo>ev.dateFrom);
+  // Only true multi-day events (at least 2 distinct days) that are not fully in the past
+  const multiEvs=events.filter(ev=>ev.multiday&&ev.dateFrom&&ev.dateTo&&ev.dateTo>ev.dateFrom&&ev.dateTo>=today);
 
   const dateMap={};
   multiEvs.forEach(ev=>{
     let d=new Date(ev.dateFrom+'T00:00:00');
     const end=new Date(ev.dateTo+'T00:00:00');
     while(d<=end){
-      const ds=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      if(!dateMap[ds]) dateMap[ds]=[];
-      dateMap[ds].push(ev);
+      const ds=_ds(d);
+      // Conflicts on past days are irrelevant
+      if(ds>=today){
+        if(!dateMap[ds]) dateMap[ds]=[];
+        dateMap[ds].push(ev);
+      }
       d.setDate(d.getDate()+1);
     }
   });
@@ -1350,10 +1519,12 @@ function detectConflicts(){
   Object.entries(dateMap).forEach(([date,evs])=>{
     if(evs.length<2) return;
     const conflicting=new Set();
+    // Anwesenheit einmal je Termin bestimmen, nicht in jedem Paarvergleich
+    const present=new Map(evs.map(ev=>[ev,presentPersons(ev,date)]));
     for(let i=0;i<evs.length;i++){
       for(let j=i+1;j<evs.length;j++){
-        const pA=affectedPersons(evs[i]);
-        const pB=affectedPersons(evs[j]);
+        const pA=present.get(evs[i]), pB=present.get(evs[j]);
+        // Kollision nur, wenn dieselbe Person an diesem Tag bei beiden da ist
         if(pA.some(p=>pB.includes(p))){ conflicting.add(evs[i]); conflicting.add(evs[j]); }
       }
     }
@@ -1517,6 +1688,7 @@ function effectiveStatus(e){
 function renderCard(e){
   const isM=e.multiday;
   const ds=isM?`${fmtD(e.dateFrom)} – ${fmtD(e.dateTo)}`:fmtD(e.date);
+  const ppHtml=personDatesHtml(e);
   const ts=(!e.allday&&e.time)?e.time+' Uhr':'Ganztägig';
   const sel=selIds.has(e.id);
   const effStatus=effectiveStatus(e);
@@ -1615,6 +1787,23 @@ function renderCard(e){
     sections+=trHtml;
   }
 
+  const cardExps=eventExpenses(e).filter(x=>expCents(x));
+  if(cardExps.length){
+    const openExps=cardExps.filter(x=>!x.settledAt);
+    const bal=sumBalance(openExps);
+    sections+=`<div class="card-section">
+      <div class="card-section-toggle" data-action="toggleSection">
+        <span class="card-section-title">Kosten (${cardExps.length}) — ${fmtEur(sumTotal(cardExps))}</span>
+        <span class="card-section-arrow">▾</span>
+      </div>
+      <div class="card-section-body">
+        ${cardExps.slice(0,4).map(x=>`<div class="sub-row"><div class="sub-dot" style="background:var(--blue);opacity:0.5"></div><span>${esc(x.desc)||'—'} · ${fmtEur(expCents(x))} · <span style="color:var(--${x.paidBy}-color);font-weight:700">${personLabel(x.paidBy)}</span>${x.settledAt?' · abgerechnet':''}</span></div>`).join('')}
+        ${cardExps.length>4?`<div style="font-size:0.72rem;color:var(--text3);margin-top:2px">+${cardExps.length-4} weitere</div>`:''}
+        <div style="font-size:0.74rem;margin-top:4px" class="${balanceClass(bal)}"><strong>${openExps.length?balanceText(bal):'Alles abgerechnet'}</strong></div>
+      </div>
+    </div>`;
+  }
+
   // Accommodations in card
   if(e.accommodations&&e.accommodations.length){
     sections+=`<div class="card-section">
@@ -1652,6 +1841,7 @@ function renderCard(e){
           <span>${ds}</span>
           ${!isM?`<span>${ts}</span>`:''}
         </div>
+        ${ppHtml?`<div class="card-meta" style="margin-top:2px;font-size:0.72rem">${ppHtml}</div>`:''}
         ${e.location?`<div class="card-meta" style="margin-top:2px">${navLink(e.location)}</div>`:''}
       </div>
       <div class="card-right">
@@ -1771,10 +1961,16 @@ function renderCal(){
     barsOnCell.forEach(b=>{
       const isStart=ci===b.sc,isEnd=ci===b.ec,isSolo=isStart&&isEnd;
       const isRowStart=ci%7===0&&ci>b.sc;
-      const cls=`cal-bar-segment bar-ow-${b.ev.owner||'gemeinsam'}${isSolo?' bar-solo':isStart?' bar-start':isEnd?' bar-end':isRowStart?' bar-row-start':''}`;
+      // Tagesgenaue Einfärbung: gemeinsame Tage grün, Alleintage in Personenfarbe
+      const present=presentPersons(b.ev,ds);
+      const owner=b.ev.owner||'gemeinsam';
+      const segCls=owner!=='gemeinsam'?`bar-ow-${owner}`
+        :present.length===1?`bar-ow-${present[0]}`
+        :present.length===0?'bar-absent':'bar-ow-gemeinsam';
+      const cls=`cal-bar-segment ${segCls}${isSolo?' bar-solo':isStart?' bar-start':isEnd?' bar-end':isRowStart?' bar-row-start':''}`;
       const top=26+b.row*16;
       const label=(isStart||isRowStart)?`<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;display:block">${esc(b.ev.title)||SL[b.ev.status]||''}</span>`:`<span></span>`;
-      barsHtml+=`<div class="${cls}" style="position:absolute;top:${top}px;left:${isStart||isRowStart?'2px':'0'};right:${isEnd?'2px':'0'};pointer-events:auto;overflow:hidden" data-action="showCalDay" data-day="${ds}" title="${esc(b.ev.title)}">${label}</div>`;
+      barsHtml+=`<div class="${cls}" style="position:absolute;top:${top}px;left:${isStart||isRowStart?'2px':'0'};right:${isEnd?'2px':'0'};pointer-events:auto;overflow:hidden" data-action="showCalDay" data-day="${ds}" title="${esc(b.ev.title)}${hasPersonDates(b.ev)?' · '+esc(present.length?present.map(personLabel).join(' + '):'niemand anwesend'):''}">${label}</div>`;
     });
     const hasBar=barsHtml.length>0;
     // Cell height: bars + holiday row below (14px) when shown, otherwise normal padding
@@ -1802,6 +1998,155 @@ function showCalDay(ds){
   hydrateAttachmentImages();
 }
 
+// ── KOSTEN-ANSICHT ─────────────────────────────────────────────────────
+// 'alle' = sämtliche Positionen, 'seit' = nur die nach der letzten Zahlung
+let kostenScope='alle';
+function setKostenScope(v){kostenScope=v;renderKosten();}
+
+function renderKosten(){
+  const feed=document.getElementById('kostenFeed');
+  if(!feed) return;
+  const positions=openPositions();
+  const bal=totalBalanceCents();
+  const paidSum=payments.reduce((s,p)=>s+paymentCents(p),0);
+
+  let html=`<div class="bal-card">
+    <div>
+      <div class="bal-label">Saldo</div>
+      <div class="bal-amount ${balanceClass(bal)}">${balanceText(bal)}</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:3px">${fmtEur(sumTotal(positions.map(x=>x.exp)))} Kosten · ${fmtEur(paidSum)} gezahlt</div>
+    </div>
+    <button class="btn-secondary" data-action="openPaymentModal" style="font-size:0.78rem;padding:0 14px;min-height:38px;border-radius:8px;white-space:nowrap">Zahlung erfassen</button>
+  </div>`;
+
+  // Positionen je Termin — vollständige Historie, jüngster Termin zuerst
+  const cutoff=lastPaymentDate();
+  const useScope=kostenScope==='seit'&&cutoff;
+  const shown=useScope?positions.filter(x=>expenseDate(x.ev,x.exp)>cutoff):positions;
+  html+=`<div class="aktuell-section"><div class="aktuell-section-title">Positionen</div>`;
+  if(cutoff){
+    html+=`<div class="exp-filter">
+      <div class="filter-chip${kostenScope==='alle'?' active':''}" data-action="setKostenScope" data-scope="alle">Alle</div>
+      <div class="filter-chip${kostenScope==='seit'?' active':''}" data-action="setKostenScope" data-scope="seit">Seit letzter Zahlung</div>
+    </div>`;
+  }
+  if(!shown.length){
+    html+=`<div class="aktuell-today-empty">${useScope?'Seit der letzten Zahlung nichts angefallen':'Keine Kostenpositionen erfasst'}</div>`;
+  } else {
+    const byEvent=new Map();
+    shown.forEach(({ev,exp})=>{
+      if(!byEvent.has(ev.id)) byEvent.set(ev.id,{ev,list:[]});
+      byEvent.get(ev.id).list.push(exp);
+    });
+    html+=[...byEvent.values()]
+      .sort((a,b)=>(evPrimaryDate(b.ev)||'').localeCompare(evPrimaryDate(a.ev)||''))
+      .map(({ev,list})=>{
+        const gb=sumBalance(list);
+        return `<div class="exp-group">
+          <div class="exp-group-title" data-action="openPreview" data-ev-id="${ev.id}">${esc(ev.title)}</div>
+          <div class="exp-group-sub">${ev.multiday?fmtD(ev.dateFrom)+' – '+fmtD(ev.dateTo):fmtD(ev.date)}</div>
+          ${list.map(x=>`<div class="exp-row">
+            <div class="exp-row-main">
+              <div>${esc(x.desc)||'—'}${x.date?` <span class="exp-row-meta" style="display:inline">· ${fmtD(x.date)}</span>`:''}</div>
+              <div class="exp-row-meta">verauslagt: <span style="color:var(--${x.paidBy}-color);font-weight:700">${personLabel(x.paidBy)}</span> · getragen: ${BEARER_LABEL[x.bearer||'beide']}</div>
+            </div>
+            <span class="exp-row-amount">${fmtEur(expCents(x))}</span>
+          </div>`).join('')}
+          <div class="exp-row" style="border-top:1px solid var(--border);margin-top:5px;padding-top:5px">
+            <span class="${balanceClass(gb)}" style="font-weight:700">${balanceText(gb)}</span>
+            <span class="exp-row-amount">${fmtEur(sumTotal(list))}</span>
+          </div>
+        </div>`;
+      }).join('');
+  }
+  html+=`</div>`;
+
+  // Geleistete Zahlungen
+  html+=`<div class="aktuell-section"><div class="aktuell-section-title">Zahlungen</div>`;
+  if(!payments.length){
+    html+=`<div class="aktuell-today-empty">Noch keine Zahlungen erfasst</div>`;
+  } else {
+    html+=`<div class="exp-group">`+[...payments]
+      .sort((a,b)=>(b.date||'').localeCompare(a.date||''))
+      .map(p=>`<div class="pay-row">
+        <div class="exp-row-main">
+          <div class="pay-dir" style="color:var(--${p.from}-color)">${paymentDirText(p)}</div>
+          <div class="exp-row-meta">${p.date?fmtD(p.date):'ohne Datum'}${p.note?' · '+esc(p.note):''}</div>
+        </div>
+        <span class="exp-row-amount">${fmtEur(paymentCents(p))}</span>
+        <button class="remove-todo" data-action="askDeletePayment" data-pay-id="${esc(p.id)}" title="Zahlung löschen">✕</button>
+      </div>`).join('')+`</div>`;
+  }
+  html+=`</div>`;
+
+  // Positionen aus der früheren Alles-oder-nichts-Abrechnung
+  const legacy=allExpenses().filter(x=>expCents(x.exp)&&x.exp.settledAt);
+  if(legacy.length){
+    html+=`<div class="aktuell-section"><div class="aktuell-section-title">Früher abgerechnet</div>
+      <div class="exp-group">
+        <div class="exp-row"><div class="exp-row-main">
+          <div>${legacy.length} ${legacy.length===1?'Position':'Positionen'} aus einer früheren Abrechnung</div>
+          <div class="exp-row-meta">Gehen nicht in den Saldo ein. Sie stehen weiterhin beim jeweiligen Termin.</div>
+        </div><span class="exp-row-amount">${fmtEur(sumTotal(legacy.map(x=>x.exp)))}</span></div>
+      </div></div>`;
+  }
+  feed.innerHTML=html;
+}
+
+// ── ZAHLUNG ERFASSEN ───────────────────────────────────────────────────
+function openPaymentModal(){
+  const bal=totalBalanceCents();
+  const fromEl=document.getElementById('p_from');
+  const amtEl=document.getElementById('p_amount');
+  const dateEl=document.getElementById('p_date');
+  const noteEl=document.getElementById('p_note');
+  const hint=document.getElementById('p_hint');
+  if(!fromEl) return;
+  // Vorbelegung: der Schuldner zahlt den offenen Saldo an den anderen
+  fromEl.value=bal<0?'toja':'johann';
+  amtEl.value=bal?(Math.abs(bal)/100).toFixed(2).replace('.',','):'';
+  dateEl.value=todayStr();
+  noteEl.value='';
+  hint.textContent=bal?`Offener Saldo: ${balanceText(bal)}`:'Der Saldo ist ausgeglichen.';
+  document.getElementById('paymentModal').classList.add('open');
+}
+async function savePayment(){
+  if(!syncGuard()) return;
+  const amount=parseAmount(document.getElementById('p_amount').value);
+  if(!Number.isFinite(amount)||amount<=0){showToast('Bitte einen gültigen Betrag eingeben');return;}
+  const p={
+    id:'p_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+    from:document.getElementById('p_from').value,
+    amount,
+    date:document.getElementById('p_date').value||todayStr(),
+    note:document.getElementById('p_note').value.trim()
+  };
+  payments.push(p);
+  cacheEvents();
+  if(!await persistPayments()){payments=payments.filter(x=>x.id!==p.id);cacheEvents();return;}
+  closeModal('paymentModal');
+  logActivity('edit','Zahlung',`${paymentDirText(p)} · ${fmtEur(paymentCents(p))}${p.note?' · '+p.note:''}`);
+  showToast('Zahlung erfasst');
+  renderEverything();
+}
+function askDeletePayment(id){
+  const p=payments.find(x=>x.id===id);
+  if(!p) return;
+  askConfirm('Zahlung löschen?',`${paymentDirText(p)} · ${fmtEur(paymentCents(p))} — der Saldo ändert sich entsprechend.`,'Löschen',()=>deletePayment(id));
+}
+async function deletePayment(id){
+  if(!syncGuard()) return;
+  const before=payments;
+  const p=payments.find(x=>x.id===id);
+  if(!p) return;
+  payments=payments.filter(x=>x.id!==id);
+  cacheEvents();
+  if(!await persistPayments()){payments=before;cacheEvents();return;}
+  logActivity('delete','Zahlung',`${paymentDirText(p)} · ${fmtEur(paymentCents(p))} gelöscht`);
+  showToast('Zahlung gelöscht');
+  renderEverything();
+}
+
 // INVITATIONS
 function updateInviteBadge(){
   if(!currentUser) return;
@@ -1813,13 +2158,6 @@ function updateInviteBadge(){
     el.textContent=count;
     el.style.display=count>0?'':'none';
   });
-}
-
-function eventsOverlap(a, b){
-  const aFrom=a.dateFrom||a.date, aTo=a.dateTo||a.date;
-  const bFrom=b.dateFrom||b.date, bTo=b.dateTo||b.date;
-  if(!aFrom||!bFrom) return false;
-  return aFrom<=bTo&&aTo>=bFrom;
 }
 
 function renderInvites(){
@@ -1835,11 +2173,18 @@ function renderInvites(){
     const inv=ev.invite;
     const fromName=inv.from==='toja'?'Toja':'Johann';
     const ds=ev.multiday?`${fmtD(ev.dateFrom)} – ${fmtD(ev.dateTo)}`:fmtD(ev.date);
-    // Conflict detection: other events of the invited person on the same dates
-    const conflicts=events.filter(e=>e.id!==ev.id&&(e.owner===currentUser||e.owner==='gemeinsam')&&eventsOverlap(e,ev));
+    // Konfliktprüfung aus Sicht der eingeladenen Person: es zählen nur Tage, an
+    // denen sie bei beiden Terminen anwesend wäre — und nur solche in der Zukunft.
+    const today=todayStr();
+    const inviteeRange=personRange(ev,currentUser)||evRange(ev);
+    const conflicts=events.map(e=>{
+      if(e.id===ev.id) return null;
+      const ov=personOverlap(ev,e,currentUser,inviteeRange);
+      return (ov&&ov.to>=today)?{ev:e,ov}:null;
+    }).filter(Boolean);
     const conflictHtml=conflicts.length?`<div class="invite-conflict">
       <div class="invite-conflict-title">Terminierungskonflikt (${conflicts.length})</div>
-      ${conflicts.map(c=>`<div class="invite-conflict-item">· ${esc(c.title)} – ${c.multiday?fmtD(c.dateFrom):fmtD(c.date)}</div>`).join('')}
+      ${conflicts.map(({ev:c,ov})=>`<div class="invite-conflict-item">· ${esc(c.title)} – ${ov.from===ov.to?fmtD(ov.from):fmtD(ov.from)+' – '+fmtD(ov.to)}</div>`).join('')}
     </div>`:'';
     if(inv.status==='accepted'){
       return `<div class="invite-card">
@@ -1947,7 +2292,12 @@ function resetForm(){
   document.getElementById('todosContainer').innerHTML='';
   document.getElementById('attList').innerHTML='';
   document.getElementById('accomContainer').innerHTML='';
+  document.getElementById('expensesContainer').innerHTML='';
+  updateExpensesSummary();
   const fInvite=document.getElementById('f_invite');if(fInvite){fInvite.checked=false;fInvite.disabled=false;}
+  const fSplit=document.getElementById('f_splitDates');if(fSplit)fSplit.checked=false;
+  PERSONS.forEach(p=>['f_from_','f_to_'].forEach(pre=>{const el=document.getElementById(pre+p);if(el)el.value='';}));
+  togglePerPersonDates();
   autoDetectMultiday();toggleAllday();
   syncOwnerRestrictions();
 }
@@ -1981,6 +2331,19 @@ function populateForm(ev){
   }));
   autoDetectMultiday();toggleAllday();
   syncOwnerRestrictions();
+  // Populate per-person arrival/departure
+  const fSplit=document.getElementById('f_splitDates');
+  if(fSplit){
+    const pd=ev.personDates;
+    const on=!!(pd&&PERSONS.every(p=>pd[p]&&pd[p].from&&pd[p].to));
+    fSplit.checked=on;
+    PERSONS.forEach(p=>{
+      const f=document.getElementById(`f_from_${p}`), t=document.getElementById(`f_to_${p}`);
+      if(f) f.value=on?pd[p].from:'';
+      if(t) t.value=on?pd[p].to:'';
+    });
+    togglePerPersonDates();
+  }
   // Populate invite state
   const fInvite=document.getElementById('f_invite');
   if(fInvite){
@@ -1992,6 +2355,9 @@ function populateForm(ev){
   if(ev.attachments){pendingAtt=[...ev.attachments];renderAttList();}
   document.getElementById('accomContainer').innerHTML='';
   if(ev.accommodations&&ev.accommodations.length) ev.accommodations.forEach(a=>addAccom(a));
+  document.getElementById('expensesContainer').innerHTML='';
+  eventExpenses(ev).forEach(x=>addExpense(x));
+  updateExpensesSummary();
 }
 
 function autoDetectMultiday(){
@@ -1999,8 +2365,68 @@ function autoDetectMultiday(){
   const to=document.getElementById('f_dateTo').value;
   const isM=!!(to&&to>from);
   document.getElementById('singleDate').style.display=isM?'none':'block';
+  updatePerPersonVisibility();
 }
 function toggleAllday(){document.getElementById('timeGroup').style.display=document.getElementById('f_allday').checked?'none':'block';}
+
+// ── ABWEICHENDE AN-/ABREISE JE PERSON (Formular) ────────────────────────
+// Nur sinnvoll bei mehrtägigen, gemeinsamen Terminen: bei einem Einzeltag oder
+// einem Termin für nur eine Person gibt es nichts zu unterscheiden.
+function updatePerPersonVisibility(){
+  const sec=document.getElementById('perPersonDatesSection');
+  if(!sec) return;
+  const owner=document.getElementById('f_owner')?.value||'gemeinsam';
+  const from=document.getElementById('f_dateFrom')?.value||'';
+  const to=document.getElementById('f_dateTo')?.value||'';
+  // Nicht abwählen, nur ausblenden — beim Wiederherstellen des Zeitraums
+  // stehen die Eingaben dann noch. Gespeichert wird nur, was sichtbar gilt.
+  sec.style.display=(owner==='gemeinsam'&&to&&to>from)?'':'none';
+}
+function togglePerPersonDates(){
+  const on=!!document.getElementById('f_splitDates')?.checked;
+  const box=document.getElementById('perPersonDatesFields');
+  if(box) box.style.display=on?'':'none';
+  if(!on) return;
+  const from=document.getElementById('f_dateFrom')?.value||'';
+  const to=document.getElementById('f_dateTo')?.value||from;
+  PERSONS.forEach(p=>{
+    const f=document.getElementById(`f_from_${p}`), t=document.getElementById(`f_to_${p}`);
+    if(f&&!f.value) f.value=from;
+    if(t&&!t.value) t.value=to;
+  });
+}
+// Der Gesamtzeitraum ist die Klammer über beide Anwesenheiten und wird
+// mitgezogen, sobald jemand früher anreist oder später abreist.
+function syncSplitDates(){
+  if(!document.getElementById('f_splitDates')?.checked) return;
+  const fromEl=document.getElementById('f_dateFrom'), toEl=document.getElementById('f_dateTo');
+  if(!fromEl||!toEl) return;
+  let min=fromEl.value, max=toEl.value||fromEl.value;
+  PERSONS.forEach(p=>{
+    const f=document.getElementById(`f_from_${p}`)?.value||'';
+    const t=document.getElementById(`f_to_${p}`)?.value||'';
+    if(f&&(!min||f<min)) min=f;
+    if(t&&(!max||t>max)) max=t;
+  });
+  if(min&&min!==fromEl.value) fromEl.value=min;
+  if(max&&min&&max>min&&max!==toEl.value) toEl.value=max;
+  autoDetectMultiday();syncSubDates();
+}
+// Übernimmt Ankunfts-/Abreisetag aus den erfassten Transport-Teilstrecken:
+// Ankunft = letzte Teilstrecke der Anreise, Abreise = erste der Abreise.
+function datesFromTransport(person){
+  const legDate=l=>(l&&l.data&&l.data.date)||'';
+  const sorted=dir=>collectLegs(person,dir).filter(legDate)
+    .sort((a,b)=>(legDate(a)+(a.data.dep||'')).localeCompare(legDate(b)+(b.data.dep||'')));
+  const an=sorted('an'), ab=sorted('ab');
+  const from=an.length?legDate(an[an.length-1]):'';
+  const to=ab.length?legDate(ab[0]):'';
+  if(!from&&!to){showToast(`Kein Transport mit Datum für ${personLabel(person)} hinterlegt`);return;}
+  if(from){const el=document.getElementById(`f_from_${person}`);if(el)el.value=from;}
+  if(to){const el=document.getElementById(`f_to_${person}`);if(el)el.value=to;}
+  syncSplitDates();
+  showToast(`An-/Abreise ${personLabel(person)} aus Transport übernommen`);
+}
 function toggleLegType(legId){
   const val=document.getElementById(`leg_${legId}_type`).value;
   const fl=document.getElementById(`leg_${legId}_flug`);
@@ -2058,6 +2484,7 @@ function syncOwnerRestrictions(){
 
   // Update existing todo selects in the main form
   document.querySelectorAll('#todosContainer .todo-owner-select').forEach(sel=>restrictTodoSelect(sel,owner));
+  updatePerPersonVisibility();
   // Show/hide invite section (only for single-owner events)
   const inviteSec=document.getElementById('inviteSection');
   const inviteLabel=document.getElementById('inviteLabel');
@@ -2138,6 +2565,83 @@ function collectTodos(containerId){
     dueDate:item.querySelector('.todo-due-date')?.value||'',
     dueTime:item.querySelector('.todo-due-time')?.value||''
   })).filter(t=>t.text.trim());
+}
+
+// KOSTENPOSITIONEN IM FORMULAR
+let expCnt=0;
+function addExpense(data){
+  expCnt++;
+  const rowId='exp_'+expCnt;
+  const c=document.getElementById('expensesContainer');
+  if(!c) return;
+  const paid=(data&&data.paidBy)||currentUser||'toja';
+  const owner=document.getElementById('f_owner')?.value||'gemeinsam';
+  // Bei Terminen für eine Person trägt im Zweifel diese Person die Kosten
+  const bearer=(data&&data.bearer)||(owner==='gemeinsam'?'beide':owner);
+  const amount=data&&Number.isFinite(Number(data.amount))?Number(data.amount).toFixed(2).replace('.',','):'';
+  const settled=(data&&data.settledAt)||'';
+  const div=document.createElement('div');
+  div.className='exp-item'+(settled?' settled':'');
+  div.id=rowId;
+  div.dataset.expId=(data&&data.id)||'x_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  div.dataset.settledAt=settled;
+  const dis=settled?' disabled':'';
+  div.innerHTML=`
+    <input type="text" class="exp-desc" placeholder="Wofür?" value="${esc(data?.desc||'')}"${dis}>
+    <input type="text" class="exp-amount" inputmode="decimal" placeholder="0,00" value="${esc(amount)}"${dis}>
+    <span class="exp-tag">bezahlt</span>
+    <select class="exp-paid ow-${paid}" data-action="updateExpStyle"${dis}>
+      <option value="toja" ${paid==='toja'?'selected':''}>Toja</option>
+      <option value="johann" ${paid==='johann'?'selected':''}>Johann</option>
+    </select>
+    <span class="exp-tag">getragen</span>
+    <select class="exp-bearer ow-${bearer}" data-action="updateExpStyle"${dis}>
+      <option value="beide" ${bearer==='beide'?'selected':''}>Beide</option>
+      <option value="toja" ${bearer==='toja'?'selected':''}>Toja</option>
+      <option value="johann" ${bearer==='johann'?'selected':''}>Johann</option>
+    </select>
+    <input type="date" class="exp-date" value="${esc(data?.date||'')}"${dis}>
+    ${settled
+      ?`<span class="exp-settled-tag" title="Am ${esc(fmtAbsTime(settled))} abgerechnet">✓ abgerechnet</span>`
+      :`<button type="button" class="remove-todo" data-action="removeExpense" data-target="${rowId}">✕</button>`}`;
+  c.appendChild(div);
+  updateExpensesSummary();
+}
+function updateExpStyle(sel){
+  const base=sel.classList.contains('exp-paid')?'exp-paid':'exp-bearer';
+  sel.className=base+' ow-'+sel.value;
+  updateExpensesSummary();
+}
+function removeExpense(id){
+  document.getElementById(id)?.remove();
+  updateExpensesSummary();
+}
+function collectExpenses(){
+  return Array.from(document.querySelectorAll('#expensesContainer .exp-item')).map(item=>{
+    const raw=item.querySelector('.exp-amount').value.trim();
+    return {
+      id:item.dataset.expId,
+      desc:item.querySelector('.exp-desc').value.trim(),
+      amount:raw?parseAmount(raw):0,
+      paidBy:item.querySelector('.exp-paid').value,
+      bearer:item.querySelector('.exp-bearer').value,
+      date:item.querySelector('.exp-date')?.value||'',
+      settledAt:item.dataset.settledAt||''
+    };
+  }).filter(e=>e.desc||e.amount);
+}
+// Laufende Zusammenfassung unter den Zeilen — der Saldo soll schon beim
+// Eintragen sichtbar sein, nicht erst nach dem Speichern.
+function updateExpensesSummary(){
+  const el=document.getElementById('expensesSummary');
+  if(!el) return;
+  const list=collectExpenses().filter(e=>Number.isFinite(e.amount)&&e.amount);
+  if(!list.length){el.textContent='';return;}
+  const open=list.filter(e=>!e.settledAt);
+  const bal=sumBalance(open);
+  const settledCount=list.length-open.length;
+  el.innerHTML=`Gesamt ${fmtEur(sumTotal(list))} · <span class="${balanceClass(bal)}" style="font-weight:700">${balanceText(bal)}</span>`
+    +(settledCount?` · ${settledCount} bereits abgerechnet`:'');
 }
 
 // SUBEVENTS
@@ -2677,9 +3181,27 @@ async function saveEvent(){
   const title=document.getElementById('f_title').value.trim();
   if(!title){showToast('Bitte Titel eingeben');return;}
   if(!syncGuard()) return;
-  const dateFrom=document.getElementById('f_dateFrom').value;
-  const dateTo=document.getElementById('f_dateTo').value;
+  let dateFrom=document.getElementById('f_dateFrom').value;
+  let dateTo=document.getElementById('f_dateTo').value;
   const isM=!!(dateTo&&dateTo>dateFrom);
+  // Abweichende An-/Abreise: nur bei mehrtägigen, gemeinsamen Terminen
+  const splitOn=isM&&document.getElementById('f_owner').value==='gemeinsam'&&!!document.getElementById('f_splitDates')?.checked;
+  let personDates=null;
+  if(splitOn){
+    personDates={};
+    for(const p of PERSONS){
+      const f=document.getElementById(`f_from_${p}`)?.value||'';
+      const t=document.getElementById(`f_to_${p}`)?.value||'';
+      if(!f||!t){showToast(`Bitte An- und Abreise für ${personLabel(p)} angeben`);return;}
+      if(t<f){showToast(`${personLabel(p)}: Abreise liegt vor der Anreise`);return;}
+      personDates[p]={from:f,to:t};
+      // Der Gesamtzeitraum muss beide Anwesenheiten umschließen
+      if(f<dateFrom) dateFrom=f;
+      if(t>dateTo) dateTo=t;
+    }
+  }
+  const badExp=collectExpenses().find(e=>!Number.isFinite(e.amount));
+  if(badExp){showToast(`Betrag bei „${badExp.desc||'Kostenposition'}" ist keine gültige Zahl`);return;}
   const existing=editId?events.find(e=>e.id===editId):null;
   const wasEdit=!!editId;
   const evId=editId||genId();
@@ -2716,12 +3238,13 @@ async function saveEvent(){
     transport:collectTransport(),
     todos:collectTodos('todosContainer'),
     accommodations:collectAccoms(),
+    expenses:collectExpenses(),
     attachments,
     subevents:collectSubs(),
     updatedAt:new Date().toISOString()
   };
-  if(isM){ev.dateFrom=dateFrom;ev.dateTo=dateTo;}
-  else{ev.date=dateFrom;ev.time=document.getElementById('f_time').value;}
+  if(isM){ev.dateFrom=dateFrom;ev.dateTo=dateTo;ev.personDates=personDates;}
+  else{ev.date=dateFrom;ev.time=document.getElementById('f_time').value;ev.personDates=null;}
   // Invite handling
   const fInvite=document.getElementById('f_invite');
   const inviteChecked=fInvite&&fInvite.checked&&ev.owner!=='gemeinsam';
@@ -2755,8 +3278,10 @@ async function saveEvent(){
       if((existing.date||existing.dateFrom)!==(ev.date||ev.dateFrom)) changes.push('Datum geändert');
       if(existing.location!==ev.location) changes.push('Ort geändert');
       if(existing.title!==ev.title) changes.push(`Titel: „${existing.title}" → „${ev.title}"`);
+      if(JSON.stringify(existing.personDates||null)!==JSON.stringify(ev.personDates||null)) changes.push('An-/Abreise je Person geändert');
       if(JSON.stringify(existing.transport)!==JSON.stringify(ev.transport)) changes.push('Transport geändert');
       if(JSON.stringify(existing.todos)!==JSON.stringify(ev.todos)) changes.push('To-dos geändert');
+      if(JSON.stringify(existing.expenses||[])!==JSON.stringify(ev.expenses||[])) changes.push('Kosten geändert');
       if(JSON.stringify(existing.subevents)!==JSON.stringify(ev.subevents)) changes.push('Subevents geändert');
     }
     detail=changes.length?changes.join(' · '):'Details aktualisiert';
@@ -2774,17 +3299,31 @@ async function saveEvent(){
 }
 
 // DELETE
-let _pendingDeleteId=null;
+let _pendingDeleteId=null,_pendingConfirm=null;
+// Derselbe Dialog auch für andere Bestätigungen als das Löschen
+function askConfirm(title,sub,okLabel,fn){
+  _pendingDeleteId=null;
+  _pendingConfirm=fn;
+  document.getElementById('confirmDialogTitle').textContent=title;
+  document.getElementById('confirmDialogSub').textContent=sub;
+  const ok=document.getElementById('confirmDialogOk');
+  if(ok){ok.textContent=okLabel||'OK';ok.className='btn-primary';}
+  document.getElementById('confirmOverlay').classList.add('open');
+}
 function delEvent(id){
   const ev=events.find(e=>e.id===id);if(!ev)return;
   _pendingDeleteId=id;
+  _pendingConfirm=null;
   document.getElementById('confirmDialogTitle').textContent=`„${ev.title}" löschen?`;
   document.getElementById('confirmDialogSub').textContent='Diese Aktion kann nicht rückgängig gemacht werden.';
+  const ok=document.getElementById('confirmDialogOk');
+  if(ok){ok.textContent='Löschen';ok.className='btn-danger';}
   document.getElementById('confirmOverlay').classList.add('open');
 }
 async function confirmDialogOk(){
-  const id=_pendingDeleteId;  // save before closing clears it
+  const id=_pendingDeleteId, fn=_pendingConfirm;  // save before closing clears it
   closeConfirmDialog();
+  if(fn){fn();return;}
   if(!id)return;
   if(!syncGuard()) return;
   const ev=events.find(e=>e.id===id);
@@ -2800,6 +3339,7 @@ async function confirmDialogOk(){
 function closeConfirmDialog(){
   document.getElementById('confirmOverlay').classList.remove('open');
   _pendingDeleteId=null;
+  _pendingConfirm=null;
 }
 
 // PREVIEW
@@ -2823,6 +3363,7 @@ function openPreview(id){
   <div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px">
     <div class="pv-grid">
       <div class="pv-row${ev.multiday?' full':''}"><div class="pv-label">Datum</div><div class="pv-val">${ds}</div></div>
+      ${hasPersonDates(ev)?`<div class="pv-row full"><div class="pv-label">Anwesenheit</div><div class="pv-val">${personDatesHtml(ev)}</div></div>`:''}
       ${!ev.multiday?`<div class="pv-row"><div class="pv-label">Uhrzeit</div><div class="pv-val">${ts}</div></div>`:''}
       ${ev.location?`<div class="pv-row full"><div class="pv-label">Ort</div><div class="pv-val">${navLink(ev.location,'','wrap')}</div></div>`:''}
     </div>
@@ -2836,6 +3377,25 @@ function openPreview(id){
         <span style="flex:1">${esc(t.text)}</span>
         <span style="font-size:0.68rem;color:${ownerColors[t.owner||'beide']};font-weight:700">${ownerLabels[t.owner||'beide']}</span>
       </div>`).join('')+`</div>`;
+  }
+
+  const pvExps=eventExpenses(ev).filter(x=>expCents(x));
+  if(pvExps.length){
+    const openExps=pvExps.filter(x=>!x.settledAt);
+    const bal=sumBalance(openExps);
+    html+=`<div class="pv-block" style="margin-bottom:8px"><div class="pv-block-title">Kosten</div>`+
+      pvExps.map(x=>`<div class="exp-row">
+        <div class="exp-row-main">
+          <div>${esc(x.desc)||'—'}</div>
+          <div class="exp-row-meta">verauslagt: <span style="color:var(--${x.paidBy}-color);font-weight:700">${personLabel(x.paidBy)}</span> · getragen: ${BEARER_LABEL[x.bearer||'beide']}${x.settledAt?' · abgerechnet':''}</div>
+        </div>
+        <span class="exp-row-amount">${fmtEur(expCents(x))}</span>
+      </div>`).join('')+
+      `<div class="exp-row" style="border-top:1px solid var(--border);margin-top:5px;padding-top:5px">
+        <span style="font-weight:700">Gesamt</span><span class="exp-row-amount">${fmtEur(sumTotal(pvExps))}</span>
+      </div>
+      <div class="exp-row"><span class="${balanceClass(bal)}" style="font-weight:700">${openExps.length?balanceText(bal):'Alles abgerechnet'}</span></div>
+    </div>`;
   }
 
   const tr=ev.transport||{};
@@ -2976,6 +3536,13 @@ document.addEventListener('click', e=>{
     case 'toggleFilter': toggleFilter(t.dataset.filter,t); break;
     case 'toggleTimeFilter': toggleTimeFilter(t.dataset.filter); break;
     // Banners / nav
+    case 'datesFromTransport': datesFromTransport(t.dataset.person); break;
+    case 'addExpense': addExpense(); break;
+    case 'removeExpense': removeExpense(t.dataset.target); break;
+    case 'openPaymentModal': openPaymentModal(); break;
+    case 'savePayment': savePayment(); break;
+    case 'askDeletePayment': askDeletePayment(t.dataset.payId); break;
+    case 'setKostenScope': setKostenScope(t.dataset.scope); break;
     case 'dismissConflictBanner': dismissConflictBanner(); break;
     case 'dismissConflict': e.stopPropagation(); dismissConflict(t.dataset.key); break;
     case 'calPrev': calPrev(); break;
@@ -3059,9 +3626,13 @@ document.addEventListener('change', e=>{
   const a=t.dataset.action;
   if(a==='toggleLegType') toggleLegType(t.dataset.lid);
   else if(a==='updateTodoOwnerStyle') updateTodoOwnerStyle(t);
+  else if(a==='updateExpStyle') updateExpStyle(t);
+  else if(a==='togglePerPersonDates') togglePerPersonDates();
+  else if(a==='syncSplitDates') syncSplitDates();
 });
 
 document.addEventListener('input', e=>{
+  if(e.target.closest('#expensesContainer')) updateExpensesSummary();
   const t=e.target.closest('[data-action]');
   if(!t) return;
   if(t.dataset.action==='addrSearchInput')
