@@ -599,6 +599,7 @@ function renderEverything(){
   renderAktuellIfActive();
   try{if(document.getElementById('view-todos').classList.contains('active'))renderTodos();}catch(e){console.warn('[nous] renderTodos fehlgeschlagen',e);}
   try{if(document.getElementById('view-invites').classList.contains('active'))renderInvites();}catch(e){console.warn('[nous] renderInvites fehlgeschlagen',e);}
+  try{if(document.getElementById('view-kosten').classList.contains('active'))renderKosten();}catch(e){console.warn('[nous] renderKosten fehlgeschlagen',e);}
   updateInviteBadge();
   hydrateAttachmentImages();
 }
@@ -770,15 +771,15 @@ function renderTodos(){
 }
 
 const FILTER_TABS=new Set(['overview','todos']);
-const TABS_ORDER=['aktuell','calendar','todos','overview'];
+const TABS_ORDER=['aktuell','calendar','todos','overview','kosten'];
 let timeFilter='all';
 let currentTab='aktuell';
 
 function switchTab(n,el){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-  if(el) el.classList.add('active');
-  else{const te=document.querySelector(`[data-tab="${n}"]`);if(te)te.classList.add('active');}
+  if(el&&el.classList.contains('tab')) el.classList.add('active');
+  else{const te=document.querySelector(`.tab[data-tab="${n}"]`);if(te)te.classList.add('active');}
   document.getElementById('view-'+n).classList.add('active');
   currentTab=n;
   const toolbar=document.getElementById('filterToolbar');
@@ -788,6 +789,7 @@ function switchTab(n,el){
   if(n==='calendar') renderCal();
   else if(n==='aktuell') renderAktuell();
   else if(n==='todos') renderTodos();
+  else if(n==='kosten') renderKosten();
   else renderAll();
 }
 
@@ -1223,6 +1225,20 @@ function renderAktuell(){
   }
   html+=`</div>`;
 
+  // Section: Kosten — nur der Saldo, Details im eigenen Tab
+  const aktOpen=allExpenses().filter(x=>expCents(x.exp)&&!x.exp.settledAt);
+  if(aktOpen.length){
+    const aktBal=sumBalance(aktOpen.map(x=>x.exp));
+    html+=`<div class="aktuell-section"><div class="aktuell-section-title">Kosten</div>
+      <div class="bal-card" style="margin-bottom:0">
+        <div>
+          <div class="bal-amount ${balanceClass(aktBal)}">${balanceText(aktBal)}</div>
+          <div style="font-size:0.72rem;color:var(--text3);margin-top:3px">${aktOpen.length} offene ${aktOpen.length===1?'Position':'Positionen'} · ${fmtEur(sumTotal(aktOpen.map(x=>x.exp)))} gesamt</div>
+        </div>
+        <button class="btn-secondary" data-action="switchTab" data-tab="kosten" style="font-size:0.78rem;padding:0 14px;min-height:38px;border-radius:8px;white-space:nowrap">Details</button>
+      </div></div>`;
+  }
+
   // Section: Updates
   html+=`<div class="aktuell-section"><div class="aktuell-section-title">Updates</div>`;
   if(!recentActs.length){
@@ -1295,6 +1311,59 @@ function filtered(){
   if(activeOwnerFilters.size>0) list=list.filter(e=>activeOwnerFilters.has(e.owner||'gemeinsam'));
   return list;
 }
+
+// ── KOSTEN / AUSLAGEN ──────────────────────────────────────────────────
+// Je Position wird festgehalten, wer verauslagt hat (paidBy) und wer die
+// Kosten trägt (bearer: beide je zur Hälfte, oder eine Person allein).
+// Erst daraus ergibt sich der Saldo — wer wem wie viel schuldet.
+// Beträge stehen in Euro; gerechnet wird durchgehend in Cent, damit sich
+// keine Rundungsfehler aufsummieren.
+function parseAmount(str){
+  if(str==null) return NaN;
+  const t=String(str).replace(/[€\s]/g,'').replace(/\.(?=\d{3}(\D|$))/g,'').replace(',','.');
+  if(!t) return NaN;
+  return /^-?\d+(\.\d+)?$/.test(t)?parseFloat(t):NaN;
+}
+function expCents(e){
+  const n=Number(e&&e.amount);
+  return Number.isFinite(n)?Math.round(n*100):0;
+}
+function fmtEur(cents){
+  return (cents/100).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';
+}
+// Anteil, den `person` an dieser Position zu tragen hat (in Cent)
+function expShareCents(e,person){
+  const c=expCents(e);
+  const bearer=e.bearer||'beide';
+  if(bearer==='beide'){
+    const half=Math.round(c/2);
+    return person==='johann'?half:c-half;
+  }
+  return bearer===person?c:0;
+}
+// Saldo dieser Position: positiv = Johann schuldet Toja, negativ = umgekehrt
+function expBalanceCents(e){
+  const c=expCents(e);
+  if(!c) return 0;
+  if(e.paidBy==='toja') return expShareCents(e,'johann');
+  if(e.paidBy==='johann') return -expShareCents(e,'toja');
+  return 0;
+}
+function eventExpenses(ev){return Array.isArray(ev.expenses)?ev.expenses:[];}
+// Alle Positionen über alle Termine, jeweils mit ihrem Termin
+function allExpenses(){
+  const out=[];
+  events.forEach(ev=>eventExpenses(ev).forEach(exp=>out.push({ev,exp})));
+  return out;
+}
+function sumBalance(list){return list.reduce((s,e)=>s+expBalanceCents(e),0);}
+function sumTotal(list){return list.reduce((s,e)=>s+expCents(e),0);}
+function balanceText(cents){
+  if(cents===0) return 'Ausgeglichen';
+  return cents>0?`Johann schuldet Toja ${fmtEur(cents)}`:`Toja schuldet Johann ${fmtEur(-cents)}`;
+}
+function balanceClass(cents){return cents===0?'bal-even':cents>0?'bal-toja':'bal-johann';}
+const BEARER_LABEL={beide:'beide je zur Hälfte',toja:'Toja allein',johann:'Johann allein'};
 
 // ── ANWESENHEIT JE PERSON ──────────────────────────────────────────────
 // Ein gemeinsamer Termin kann für Toja und Johann an unterschiedlichen Tagen
@@ -1671,6 +1740,23 @@ function renderCard(e){
     sections+=trHtml;
   }
 
+  const cardExps=eventExpenses(e).filter(x=>expCents(x));
+  if(cardExps.length){
+    const openExps=cardExps.filter(x=>!x.settledAt);
+    const bal=sumBalance(openExps);
+    sections+=`<div class="card-section">
+      <div class="card-section-toggle" data-action="toggleSection">
+        <span class="card-section-title">Kosten (${cardExps.length}) — ${fmtEur(sumTotal(cardExps))}</span>
+        <span class="card-section-arrow">▾</span>
+      </div>
+      <div class="card-section-body">
+        ${cardExps.slice(0,4).map(x=>`<div class="sub-row"><div class="sub-dot" style="background:var(--blue);opacity:0.5"></div><span>${esc(x.desc)||'—'} · ${fmtEur(expCents(x))} · <span style="color:var(--${x.paidBy}-color);font-weight:700">${personLabel(x.paidBy)}</span>${x.settledAt?' · abgerechnet':''}</span></div>`).join('')}
+        ${cardExps.length>4?`<div style="font-size:0.72rem;color:var(--text3);margin-top:2px">+${cardExps.length-4} weitere</div>`:''}
+        <div style="font-size:0.74rem;margin-top:4px" class="${balanceClass(bal)}"><strong>${openExps.length?balanceText(bal):'Alles abgerechnet'}</strong></div>
+      </div>
+    </div>`;
+  }
+
   // Accommodations in card
   if(e.accommodations&&e.accommodations.length){
     sections+=`<div class="card-section">
@@ -1865,6 +1951,124 @@ function showCalDay(ds){
   hydrateAttachmentImages();
 }
 
+// ── KOSTEN-ANSICHT ─────────────────────────────────────────────────────
+function renderKosten(){
+  const feed=document.getElementById('kostenFeed');
+  if(!feed) return;
+  const all=allExpenses().filter(x=>expCents(x.exp));
+  const open=all.filter(x=>!x.exp.settledAt);
+  const bal=sumBalance(open.map(x=>x.exp));
+
+  let html=`<div class="bal-card">
+    <div>
+      <div class="bal-label">Offener Saldo</div>
+      <div class="bal-amount ${balanceClass(bal)}">${balanceText(bal)}</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:3px">${open.length} offene ${open.length===1?'Position':'Positionen'} · ${fmtEur(sumTotal(open.map(x=>x.exp)))} gesamt</div>
+    </div>
+    ${open.length?`<button class="btn-secondary" data-action="askSettle" style="font-size:0.78rem;padding:0 14px;min-height:38px;border-radius:8px;white-space:nowrap">Saldo ausgleichen</button>`:''}
+  </div>`;
+
+  // Offene Positionen, nach Termin gruppiert
+  html+=`<div class="aktuell-section"><div class="aktuell-section-title">Offene Positionen</div>`;
+  if(!open.length){
+    html+=`<div class="aktuell-today-empty">Keine offenen Kostenpositionen</div>`;
+  } else {
+    const byEvent=new Map();
+    open.forEach(({ev,exp})=>{
+      if(!byEvent.has(ev.id)) byEvent.set(ev.id,{ev,list:[]});
+      byEvent.get(ev.id).list.push(exp);
+    });
+    html+=[...byEvent.values()]
+      .sort((a,b)=>(evPrimaryDate(b.ev)||'').localeCompare(evPrimaryDate(a.ev)||''))
+      .map(({ev,list})=>{
+        const gb=sumBalance(list);
+        return `<div class="exp-group">
+          <div class="exp-group-title" data-action="openPreview" data-ev-id="${ev.id}">${esc(ev.title)}</div>
+          <div class="exp-group-sub">${ev.multiday?fmtD(ev.dateFrom)+' – '+fmtD(ev.dateTo):fmtD(ev.date)}</div>
+          ${list.map(x=>`<div class="exp-row">
+            <span>${esc(x.desc)||'—'}</span>
+            <span style="font-size:0.7rem;color:var(--text3)">verauslagt: <span style="color:var(--${x.paidBy}-color);font-weight:700">${personLabel(x.paidBy)}</span> · getragen: ${BEARER_LABEL[x.bearer||'beide']}</span>
+            <span class="exp-row-amount">${fmtEur(expCents(x))}</span>
+          </div>`).join('')}
+          <div class="exp-row" style="border-top:1px solid var(--border);margin-top:5px;padding-top:5px">
+            <span class="${balanceClass(gb)}" style="font-weight:700">${balanceText(gb)}</span>
+            <span class="exp-row-amount">${fmtEur(sumTotal(list))}</span>
+          </div>
+        </div>`;
+      }).join('');
+  }
+  html+=`</div>`;
+
+  // Abgerechnete Runden — je Ausgleich ein Eintrag, der jüngste umkehrbar
+  const rounds=new Map();
+  all.filter(x=>x.exp.settledAt).forEach(({ev,exp})=>{
+    if(!rounds.has(exp.settledAt)) rounds.set(exp.settledAt,[]);
+    rounds.get(exp.settledAt).push(exp);
+  });
+  if(rounds.size){
+    const stamps=[...rounds.keys()].sort().reverse();
+    html+=`<div class="aktuell-section"><div class="aktuell-section-title">Abgerechnet</div>`;
+    html+=stamps.map((st,i)=>{
+      const list=rounds.get(st);
+      const rb=sumBalance(list);
+      return `<div class="exp-group">
+        <div class="exp-row">
+          <span style="font-weight:700">${esc(fmtAbsTime(st))}</span>
+          <span style="font-size:0.7rem;color:var(--text3)">${list.length} ${list.length===1?'Position':'Positionen'} · ${rb===0?'ausgeglichen':(rb>0?'Johann → Toja ':'Toja → Johann ')+fmtEur(Math.abs(rb))}</span>
+          <span class="exp-row-amount">${fmtEur(sumTotal(list))}</span>
+        </div>
+        ${i===0?`<div style="margin-top:6px"><button class="btn-secondary" data-action="askUndoSettle" data-stamp="${esc(st)}" style="font-size:0.72rem;padding:0 10px;min-height:32px;border-radius:8px">Ausgleich rückgängig</button></div>`:''}
+      </div>`;
+    }).join('');
+    html+=`</div>`;
+  }
+  feed.innerHTML=html;
+}
+
+function askSettle(){
+  const open=allExpenses().filter(x=>expCents(x.exp)&&!x.exp.settledAt);
+  if(!open.length){showToast('Keine offenen Positionen');return;}
+  const bal=sumBalance(open.map(x=>x.exp));
+  askConfirm(bal===0?'Positionen als abgerechnet markieren?':balanceText(bal),
+    `${open.length} offene ${open.length===1?'Position wird':'Positionen werden'} als abgerechnet markiert und fließen nicht mehr in den Saldo ein.`,
+    'Ausgleichen',settleBalance);
+}
+// Ein Ausgleich markiert alle offenen Positionen mit demselben Zeitstempel.
+// Dadurch bleibt er als Runde erkennbar und lässt sich wieder aufheben.
+async function settleBalance(){
+  if(!syncGuard()) return;
+  const open=allExpenses().filter(x=>expCents(x.exp)&&!x.exp.settledAt);
+  if(!open.length){showToast('Keine offenen Positionen');return;}
+  const bal=sumBalance(open.map(x=>x.exp));
+  const stamp=new Date().toISOString();
+  const touched=new Map();
+  open.forEach(({ev,exp})=>{exp.settledAt=stamp;touched.set(ev.id,ev);});
+  saveData();
+  for(const ev of touched.values()){
+    if(!await persistEvent(ev)){await reloadFromSupabase();return;}
+  }
+  logActivity('edit','Kostenausgleich',`${balanceText(bal)} · ${open.length} ${open.length===1?'Position':'Positionen'} abgerechnet`);
+  showToast('Ausgleich verbucht');
+  renderEverything();
+}
+function askUndoSettle(stamp){
+  askConfirm('Ausgleich rückgängig machen?','Die Positionen dieser Abrechnung zählen wieder zum offenen Saldo.','Rückgängig',()=>undoSettlement(stamp));
+}
+async function undoSettlement(stamp){
+  if(!syncGuard()) return;
+  const hit=allExpenses().filter(x=>x.exp.settledAt===stamp);
+  if(!hit.length){showToast('Abrechnung nicht gefunden');return;}
+  const touched=new Map();
+  hit.forEach(({ev,exp})=>{exp.settledAt='';touched.set(ev.id,ev);});
+  saveData();
+  for(const ev of touched.values()){
+    if(!await persistEvent(ev)){await reloadFromSupabase();return;}
+  }
+  logActivity('edit','Kostenausgleich',`Ausgleich vom ${fmtAbsTime(stamp)} rückgängig gemacht`);
+  showToast('Ausgleich aufgehoben');
+  renderEverything();
+}
+
 // INVITATIONS
 function updateInviteBadge(){
   if(!currentUser) return;
@@ -2010,6 +2214,8 @@ function resetForm(){
   document.getElementById('todosContainer').innerHTML='';
   document.getElementById('attList').innerHTML='';
   document.getElementById('accomContainer').innerHTML='';
+  document.getElementById('expensesContainer').innerHTML='';
+  updateExpensesSummary();
   const fInvite=document.getElementById('f_invite');if(fInvite){fInvite.checked=false;fInvite.disabled=false;}
   const fSplit=document.getElementById('f_splitDates');if(fSplit)fSplit.checked=false;
   PERSONS.forEach(p=>['f_from_','f_to_'].forEach(pre=>{const el=document.getElementById(pre+p);if(el)el.value='';}));
@@ -2071,6 +2277,9 @@ function populateForm(ev){
   if(ev.attachments){pendingAtt=[...ev.attachments];renderAttList();}
   document.getElementById('accomContainer').innerHTML='';
   if(ev.accommodations&&ev.accommodations.length) ev.accommodations.forEach(a=>addAccom(a));
+  document.getElementById('expensesContainer').innerHTML='';
+  eventExpenses(ev).forEach(x=>addExpense(x));
+  updateExpensesSummary();
 }
 
 function autoDetectMultiday(){
@@ -2278,6 +2487,83 @@ function collectTodos(containerId){
     dueDate:item.querySelector('.todo-due-date')?.value||'',
     dueTime:item.querySelector('.todo-due-time')?.value||''
   })).filter(t=>t.text.trim());
+}
+
+// KOSTENPOSITIONEN IM FORMULAR
+let expCnt=0;
+function addExpense(data){
+  expCnt++;
+  const rowId='exp_'+expCnt;
+  const c=document.getElementById('expensesContainer');
+  if(!c) return;
+  const paid=(data&&data.paidBy)||currentUser||'toja';
+  const owner=document.getElementById('f_owner')?.value||'gemeinsam';
+  // Bei Terminen für eine Person trägt im Zweifel diese Person die Kosten
+  const bearer=(data&&data.bearer)||(owner==='gemeinsam'?'beide':owner);
+  const amount=data&&Number.isFinite(Number(data.amount))?Number(data.amount).toFixed(2).replace('.',','):'';
+  const settled=(data&&data.settledAt)||'';
+  const div=document.createElement('div');
+  div.className='exp-item'+(settled?' settled':'');
+  div.id=rowId;
+  div.dataset.expId=(data&&data.id)||'x_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  div.dataset.settledAt=settled;
+  const dis=settled?' disabled':'';
+  div.innerHTML=`
+    <input type="text" class="exp-desc" placeholder="Wofür?" value="${esc(data?.desc||'')}"${dis}>
+    <input type="text" class="exp-amount" inputmode="decimal" placeholder="0,00" value="${esc(amount)}"${dis}>
+    <span class="exp-tag">bezahlt</span>
+    <select class="exp-paid ow-${paid}" data-action="updateExpStyle"${dis}>
+      <option value="toja" ${paid==='toja'?'selected':''}>Toja</option>
+      <option value="johann" ${paid==='johann'?'selected':''}>Johann</option>
+    </select>
+    <span class="exp-tag">getragen</span>
+    <select class="exp-bearer ow-${bearer}" data-action="updateExpStyle"${dis}>
+      <option value="beide" ${bearer==='beide'?'selected':''}>Beide</option>
+      <option value="toja" ${bearer==='toja'?'selected':''}>Toja</option>
+      <option value="johann" ${bearer==='johann'?'selected':''}>Johann</option>
+    </select>
+    <input type="date" class="exp-date" value="${esc(data?.date||'')}"${dis}>
+    ${settled
+      ?`<span class="exp-settled-tag" title="Am ${esc(fmtAbsTime(settled))} abgerechnet">✓ abgerechnet</span>`
+      :`<button type="button" class="remove-todo" data-action="removeExpense" data-target="${rowId}">✕</button>`}`;
+  c.appendChild(div);
+  updateExpensesSummary();
+}
+function updateExpStyle(sel){
+  const base=sel.classList.contains('exp-paid')?'exp-paid':'exp-bearer';
+  sel.className=base+' ow-'+sel.value;
+  updateExpensesSummary();
+}
+function removeExpense(id){
+  document.getElementById(id)?.remove();
+  updateExpensesSummary();
+}
+function collectExpenses(){
+  return Array.from(document.querySelectorAll('#expensesContainer .exp-item')).map(item=>{
+    const raw=item.querySelector('.exp-amount').value.trim();
+    return {
+      id:item.dataset.expId,
+      desc:item.querySelector('.exp-desc').value.trim(),
+      amount:raw?parseAmount(raw):0,
+      paidBy:item.querySelector('.exp-paid').value,
+      bearer:item.querySelector('.exp-bearer').value,
+      date:item.querySelector('.exp-date')?.value||'',
+      settledAt:item.dataset.settledAt||''
+    };
+  }).filter(e=>e.desc||e.amount);
+}
+// Laufende Zusammenfassung unter den Zeilen — der Saldo soll schon beim
+// Eintragen sichtbar sein, nicht erst nach dem Speichern.
+function updateExpensesSummary(){
+  const el=document.getElementById('expensesSummary');
+  if(!el) return;
+  const list=collectExpenses().filter(e=>Number.isFinite(e.amount)&&e.amount);
+  if(!list.length){el.textContent='';return;}
+  const open=list.filter(e=>!e.settledAt);
+  const bal=sumBalance(open);
+  const settledCount=list.length-open.length;
+  el.innerHTML=`Gesamt ${fmtEur(sumTotal(list))} · <span class="${balanceClass(bal)}" style="font-weight:700">${balanceText(bal)}</span>`
+    +(settledCount?` · ${settledCount} bereits abgerechnet`:'');
 }
 
 // SUBEVENTS
@@ -2836,6 +3122,8 @@ async function saveEvent(){
       if(t>dateTo) dateTo=t;
     }
   }
+  const badExp=collectExpenses().find(e=>!Number.isFinite(e.amount));
+  if(badExp){showToast(`Betrag bei „${badExp.desc||'Kostenposition'}" ist keine gültige Zahl`);return;}
   const existing=editId?events.find(e=>e.id===editId):null;
   const wasEdit=!!editId;
   const evId=editId||genId();
@@ -2872,6 +3160,7 @@ async function saveEvent(){
     transport:collectTransport(),
     todos:collectTodos('todosContainer'),
     accommodations:collectAccoms(),
+    expenses:collectExpenses(),
     attachments,
     subevents:collectSubs(),
     updatedAt:new Date().toISOString()
@@ -2914,6 +3203,7 @@ async function saveEvent(){
       if(JSON.stringify(existing.personDates||null)!==JSON.stringify(ev.personDates||null)) changes.push('An-/Abreise je Person geändert');
       if(JSON.stringify(existing.transport)!==JSON.stringify(ev.transport)) changes.push('Transport geändert');
       if(JSON.stringify(existing.todos)!==JSON.stringify(ev.todos)) changes.push('To-dos geändert');
+      if(JSON.stringify(existing.expenses||[])!==JSON.stringify(ev.expenses||[])) changes.push('Kosten geändert');
       if(JSON.stringify(existing.subevents)!==JSON.stringify(ev.subevents)) changes.push('Subevents geändert');
     }
     detail=changes.length?changes.join(' · '):'Details aktualisiert';
@@ -2931,17 +3221,31 @@ async function saveEvent(){
 }
 
 // DELETE
-let _pendingDeleteId=null;
+let _pendingDeleteId=null,_pendingConfirm=null;
+// Derselbe Dialog auch für andere Bestätigungen als das Löschen
+function askConfirm(title,sub,okLabel,fn){
+  _pendingDeleteId=null;
+  _pendingConfirm=fn;
+  document.getElementById('confirmDialogTitle').textContent=title;
+  document.getElementById('confirmDialogSub').textContent=sub;
+  const ok=document.getElementById('confirmDialogOk');
+  if(ok){ok.textContent=okLabel||'OK';ok.className='btn-primary';}
+  document.getElementById('confirmOverlay').classList.add('open');
+}
 function delEvent(id){
   const ev=events.find(e=>e.id===id);if(!ev)return;
   _pendingDeleteId=id;
+  _pendingConfirm=null;
   document.getElementById('confirmDialogTitle').textContent=`„${ev.title}" löschen?`;
   document.getElementById('confirmDialogSub').textContent='Diese Aktion kann nicht rückgängig gemacht werden.';
+  const ok=document.getElementById('confirmDialogOk');
+  if(ok){ok.textContent='Löschen';ok.className='btn-danger';}
   document.getElementById('confirmOverlay').classList.add('open');
 }
 async function confirmDialogOk(){
-  const id=_pendingDeleteId;  // save before closing clears it
+  const id=_pendingDeleteId, fn=_pendingConfirm;  // save before closing clears it
   closeConfirmDialog();
+  if(fn){fn();return;}
   if(!id)return;
   if(!syncGuard()) return;
   const ev=events.find(e=>e.id===id);
@@ -2957,6 +3261,7 @@ async function confirmDialogOk(){
 function closeConfirmDialog(){
   document.getElementById('confirmOverlay').classList.remove('open');
   _pendingDeleteId=null;
+  _pendingConfirm=null;
 }
 
 // PREVIEW
@@ -2994,6 +3299,23 @@ function openPreview(id){
         <span style="flex:1">${esc(t.text)}</span>
         <span style="font-size:0.68rem;color:${ownerColors[t.owner||'beide']};font-weight:700">${ownerLabels[t.owner||'beide']}</span>
       </div>`).join('')+`</div>`;
+  }
+
+  const pvExps=eventExpenses(ev).filter(x=>expCents(x));
+  if(pvExps.length){
+    const openExps=pvExps.filter(x=>!x.settledAt);
+    const bal=sumBalance(openExps);
+    html+=`<div class="pv-block" style="margin-bottom:8px"><div class="pv-block-title">Kosten</div>`+
+      pvExps.map(x=>`<div class="exp-row">
+        <span>${esc(x.desc)||'—'}</span>
+        <span style="font-size:0.7rem;color:var(--text3)">verauslagt: <span style="color:var(--${x.paidBy}-color);font-weight:700">${personLabel(x.paidBy)}</span> · getragen: ${BEARER_LABEL[x.bearer||'beide']}${x.settledAt?' · abgerechnet':''}</span>
+        <span class="exp-row-amount">${fmtEur(expCents(x))}</span>
+      </div>`).join('')+
+      `<div class="exp-row" style="border-top:1px solid var(--border);margin-top:5px;padding-top:5px">
+        <span style="font-weight:700">Gesamt</span><span class="exp-row-amount">${fmtEur(sumTotal(pvExps))}</span>
+      </div>
+      <div class="exp-row"><span class="${balanceClass(bal)}" style="font-weight:700">${openExps.length?balanceText(bal):'Alles abgerechnet'}</span></div>
+    </div>`;
   }
 
   const tr=ev.transport||{};
@@ -3135,6 +3457,10 @@ document.addEventListener('click', e=>{
     case 'toggleTimeFilter': toggleTimeFilter(t.dataset.filter); break;
     // Banners / nav
     case 'datesFromTransport': datesFromTransport(t.dataset.person); break;
+    case 'addExpense': addExpense(); break;
+    case 'removeExpense': removeExpense(t.dataset.target); break;
+    case 'askSettle': askSettle(); break;
+    case 'askUndoSettle': askUndoSettle(t.dataset.stamp); break;
     case 'dismissConflictBanner': dismissConflictBanner(); break;
     case 'dismissConflict': e.stopPropagation(); dismissConflict(t.dataset.key); break;
     case 'calPrev': calPrev(); break;
@@ -3218,11 +3544,13 @@ document.addEventListener('change', e=>{
   const a=t.dataset.action;
   if(a==='toggleLegType') toggleLegType(t.dataset.lid);
   else if(a==='updateTodoOwnerStyle') updateTodoOwnerStyle(t);
+  else if(a==='updateExpStyle') updateExpStyle(t);
   else if(a==='togglePerPersonDates') togglePerPersonDates();
   else if(a==='syncSplitDates') syncSplitDates();
 });
 
 document.addEventListener('input', e=>{
+  if(e.target.closest('#expensesContainer')) updateExpensesSummary();
   const t=e.target.closest('[data-action]');
   if(!t) return;
   if(t.dataset.action==='addrSearchInput')

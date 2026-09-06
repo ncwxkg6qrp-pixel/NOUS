@@ -451,6 +451,29 @@ textarea{resize:vertical;min-height:64px}
 .todo-owner-select.ow-toja{color:var(--toja-color);border-color:var(--toja-color);background-color:var(--toja-soft)}
 .todo-owner-select.ow-johann{color:var(--johann-color);border-color:var(--johann-color);background-color:var(--johann-soft)}
 .todo-owner-select.ow-beide{color:#555;border-color:var(--border2);background-color:var(--surface2)}
+.exp-item{display:flex;align-items:center;gap:6px;flex-wrap:wrap;background:#fff;border:1px solid var(--border);border-radius:4px;padding:7px 10px;margin-bottom:6px}
+.exp-item.settled{background:var(--surface2)}
+.exp-item input,.exp-item select{min-height:34px;padding:5px 8px;font-size:0.8rem;border-radius:6px;width:auto;border-width:1px}
+.exp-item .exp-desc{flex:1 1 140px;min-width:110px}
+.exp-item .exp-amount{width:88px;flex-shrink:0;text-align:right}
+.exp-item .exp-date{width:132px;flex-shrink:0}
+.exp-item select.exp-paid,.exp-item select.exp-bearer{width:96px;flex-shrink:0;font-weight:700;font-size:0.72rem;padding-right:22px}
+.exp-item select.ow-toja{color:var(--toja-color);border-color:var(--toja-color);background-color:var(--toja-soft)}
+.exp-item select.ow-johann{color:var(--johann-color);border-color:var(--johann-color);background-color:var(--johann-soft)}
+.exp-item select.ow-beide{color:#555;border-color:var(--border2);background-color:var(--surface2)}
+.exp-tag{font-size:0.6rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;flex-shrink:0}
+.exp-settled-tag{font-size:0.62rem;font-weight:700;color:var(--green);flex-shrink:0}
+.bal-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.bal-label{font-size:0.7rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:3px}
+.bal-amount{font-size:1.35rem;font-weight:800;line-height:1.2}
+.bal-toja{color:var(--toja-color)}
+.bal-johann{color:var(--johann-color)}
+.bal-even{color:var(--green)}
+.exp-row{display:flex;align-items:baseline;gap:8px;font-size:0.78rem;color:var(--text2);padding:3px 0;flex-wrap:wrap}
+.exp-row-amount{font-weight:700;color:var(--text);margin-left:auto;white-space:nowrap}
+.exp-group{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px}
+.exp-group-title{font-size:0.8rem;font-weight:700;margin-bottom:2px;cursor:pointer}
+.exp-group-sub{font-size:0.68rem;color:var(--text3);margin-bottom:6px}
 .add-todo-btn{display:flex;align-items:center;gap:5px;background:transparent;border:1px dashed var(--border2);border-radius:4px;padding:6px 10px;color:var(--text3);font-size:0.76rem;font-family:'Nunito',sans-serif;cursor:pointer;transition:all 0.18s;font-weight:600}
 .add-todo-btn:hover{border-color:var(--blue);color:var(--blue);background:var(--blue-soft)}
 .remove-todo{width:18px;height:18px;border-radius:3px;background:transparent;border:none;color:var(--text3);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:0.7rem;flex-shrink:0;transition:color 0.15s}
@@ -622,6 +645,7 @@ textarea{resize:vertical;min-height:64px}
     <div class="tab" data-action="switchTab" data-tab="calendar">Kalender</div>
     <div class="tab" data-action="switchTab" data-tab="todos">To-dos</div>
     <div class="tab" data-action="switchTab" data-tab="overview">Alle Termine</div>
+    <div class="tab" data-action="switchTab" data-tab="kosten">Kosten</div>
   </div>
 
   <div id="filterToolbar" style="display:none">
@@ -674,6 +698,11 @@ textarea{resize:vertical;min-height:64px}
   <!-- OVERVIEW -->
   <div class="view" id="view-overview">
     <div class="event-list" id="eventList"></div>
+  </div>
+
+  <!-- KOSTEN -->
+  <div class="view" id="view-kosten">
+    <div id="kostenFeed"></div>
   </div>
 
   <!-- INVITES VIEW -->
@@ -847,6 +876,17 @@ textarea{resize:vertical;min-height:64px}
       <div class="form-section-body">
         <div class="todos-container" id="todosContainer"></div>
         <button class="add-todo-btn" data-action="addTodo" data-target="todosContainer">+ To-do hinzufügen</button>
+      </div>
+
+      <!-- KOSTEN -->
+      <div class="form-section-toggle" data-action="toggleModalSection">
+        <span class="form-section-toggle-label">Kosten</span>
+        <span class="form-section-toggle-arrow">▾</span>
+      </div>
+      <div class="form-section-body">
+        <div id="expensesContainer"></div>
+        <div id="expensesSummary" style="font-size:0.75rem;color:var(--text2);margin:2px 0 8px"></div>
+        <button class="add-todo-btn" data-action="addExpense">+ Kostenposition hinzufügen</button>
       </div>
 
       <!-- TRANSPORT -->
