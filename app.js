@@ -359,6 +359,10 @@ function visibleActivity(){
 function activityEventId(a){
   if(!a) return '';
   if(a.evId&&events.some(e=>e.id===a.evId)) return a.evId;
+  // Löschungen nie über den Titel auflösen: Der protokollierte Termin ist
+  // fort, ein gleichnamiger noch bestehender wäre ein anderer. Ein Eintrag
+  // „Termin gelöscht" würde sonst einen fremden Termin öffnen.
+  if(a.type==='delete') return '';
   const title=a.evTitle||'';
   if(!title) return '';
   const hits=events.filter(e=>e.title===title);
