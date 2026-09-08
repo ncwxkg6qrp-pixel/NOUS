@@ -37,6 +37,15 @@ const BUCKET = 'attachments';
 // verlangt. Die Zeile wird beim Laden herausgefiltert und erreicht die
 // Terminlisten nie.
 const LEDGER_ID = '__ledger__';
+// ── FEATURE-SCHALTER: KOSTEN ───────────────────────────────────────────
+// Die Kostenfunktion ist vollständig implementiert, aber vorerst stillgelegt:
+// Sie soll erst live gehen, wenn geklärt ist, wie sie sich sauber in den
+// übrigen Ablauf einfügt. Der Schalter blendet ausschließlich Bedienung und
+// Anzeige aus. Bereits erfasste Kostenpositionen und Zahlungen bleiben
+// gespeichert, werden weiter synchronisiert und beim Bearbeiten eines Termins
+// unverändert übernommen — ein `true` hier genügt, um alles wieder sichtbar
+// zu machen.
+const FEATURE_KOSTEN = false;
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     persistSession: true,
@@ -325,15 +334,32 @@ function fmtRelTime(iso){
   if(m>0)return `vor ${m} Min.`;
   return 'gerade eben';
 }
+// Solange die Kostenfunktion abgeschaltet ist, sollen auch die bereits
+// protokollierten Kosten- und Zahlungsvorgänge nicht mehr im Update-Feed
+// erscheinen. Gefiltert wird ausschließlich die Anzeige — das Protokoll
+// selbst bleibt vollständig erhalten.
+function isKostenActivity(a){
+  return ((a&&a.evTitle)||'')==='Zahlung'||/^Ausgabe: /.test((a&&a.detail)||'');
+}
+function visibleActivity(){
+  if(FEATURE_KOSTEN) return activityLog;
+  return activityLog.filter(a=>!isKostenActivity(a)).map(a=>{
+    const detail=String(a.detail||'').split(' · ').filter(part=>part!=='Kosten geändert').join(' · ');
+    if(detail===a.detail) return a;
+    return Object.assign({},a,{detail:detail||'Details aktualisiert'});
+  });
+}
+
 function renderActivity(){
   const c=document.getElementById('activityFeed');if(!c)return;
-  if(!activityLog.length){
+  const acts=visibleActivity();
+  if(!acts.length){
     c.innerHTML=`<div class="activity-empty"><div class="activity-empty-text">Noch keine Aktivität aufgezeichnet</div></div>`;
     return;
   }
   const icons={create:'+',edit:'~',delete:'×',todo:'✓',export:'↓'};
   const iconCls={create:'ai-create',edit:'ai-edit',delete:'ai-delete',todo:'ai-todo',export:'ai-edit'};
-  c.innerHTML=activityLog.map(a=>{
+  c.innerHTML=acts.map(a=>{
     const who=a.user==='toja'?'Toja':a.user==='johann'?'Johann':null;
     const personBadge=who?`<span style="font-weight:700;color:${a.user==='toja'?'var(--toja-color)':'var(--johann-color)'}">${who}</span> · `:'';
     return `<div class="activity-item">
@@ -380,6 +406,13 @@ function bindStaticHandlers(){
     if(gi.complete&&gi.naturalWidth===0) fallback();
   }
 }
+// Blendet die im Markup mit data-feature markierten Bereiche aus, solange
+// der zugehörige Schalter aus ist.
+function applyFeatureFlags(){
+  if(FEATURE_KOSTEN) return;
+  document.querySelectorAll('[data-feature="kosten"]').forEach(el=>{el.style.display='none';});
+}
+
 function initApp(user){
   currentUser=detectPerson(user);
   bindStaticHandlers();
@@ -562,7 +595,7 @@ function renderEverything(){
   renderAktuellIfActive();
   try{if(document.getElementById('view-todos').classList.contains('active'))renderTodos();}catch(e){console.warn('[nous] renderTodos fehlgeschlagen',e);}
   try{if(document.getElementById('view-invites').classList.contains('active'))renderInvites();}catch(e){console.warn('[nous] renderInvites fehlgeschlagen',e);}
-  try{if(document.getElementById('view-kosten').classList.contains('active'))renderKosten();}catch(e){console.warn('[nous] renderKosten fehlgeschlagen',e);}
+  if(FEATURE_KOSTEN){try{if(document.getElementById('view-kosten').classList.contains('active'))renderKosten();}catch(e){console.warn('[nous] renderKosten fehlgeschlagen',e);}}
   updateInviteBadge();
   hydrateAttachmentImages();
 }
@@ -738,11 +771,12 @@ function renderTodos(){
 }
 
 const FILTER_TABS=new Set(['overview','todos']);
-const TABS_ORDER=['aktuell','calendar','todos','overview','kosten'];
+const TABS_ORDER=['aktuell','calendar','todos','overview','kosten'].filter(t=>t!=='kosten'||FEATURE_KOSTEN);
 let timeFilter='all';
 let currentTab='aktuell';
 
 function switchTab(n,el){
+  if(n==='kosten'&&!FEATURE_KOSTEN){n='aktuell';el=null;}
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   if(el&&el.classList.contains('tab')) el.classList.add('active');
@@ -1227,7 +1261,7 @@ function renderAktuell(){
     .slice(0,3);
 
   // UPDATES — last 10 activity entries
-  const recentActs=activityLog.slice(0,10);
+  const recentActs=visibleActivity().slice(0,10);
 
   // Other person's events today (for the notice banner)
   const otherUser=currentUser==='toja'?'johann':currentUser==='johann'?'toja':null;
@@ -1283,8 +1317,8 @@ function renderAktuell(){
   html+=`</div>`;
 
   // Section: Kosten — nur der Saldo, Details im eigenen Tab
-  const aktOpen=openPositions();
-  if(aktOpen.length||payments.length){
+  const aktOpen=FEATURE_KOSTEN?openPositions():[];
+  if(FEATURE_KOSTEN&&(aktOpen.length||payments.length)){
     const aktBal=totalBalanceCents();
     html+=`<div class="aktuell-section"><div class="aktuell-section-title">Kosten</div>
       <div class="bal-card" style="margin-bottom:0">
@@ -1821,7 +1855,7 @@ function renderCard(e){
     sections+=trHtml;
   }
 
-  const cardExps=eventExpenses(e).filter(x=>expCents(x));
+  const cardExps=FEATURE_KOSTEN?eventExpenses(e).filter(x=>expCents(x)):[];
   if(cardExps.length){
     const openExps=cardExps.filter(x=>!x.settledAt);
     const bal=sumBalance(openExps);
@@ -1886,7 +1920,7 @@ function renderCard(e){
             <div class="card-menu" id="cm_${e.id}">
               <div class="card-menu-item" data-action="openPreview" data-ev-id="${e.id}">Vorschau</div>
               <div class="card-menu-item" data-action="openModal" data-ev-id="${e.id}">Bearbeiten</div>
-              <div class="card-menu-item" data-action="openExpenseModal" data-ev-id="${e.id}">Ausgabe hinzufügen</div>
+              ${FEATURE_KOSTEN?`<div class="card-menu-item" data-action="openExpenseModal" data-ev-id="${e.id}">Ausgabe hinzufügen</div>`:''}
               ${eventHasMapData(e)?`<div class="card-menu-item" data-action="openEventMap" data-ev-id="${e.id}">Karte</div>`:''}
             </div>
           </div>
@@ -2039,6 +2073,7 @@ let kostenScope='alle';
 function setKostenScope(v){kostenScope=v;renderKosten();}
 
 function renderKosten(){
+  if(!FEATURE_KOSTEN) return;
   const feed=document.getElementById('kostenFeed');
   if(!feed) return;
   const positions=openPositions();
@@ -2151,6 +2186,7 @@ function expensePickerEvents(){
   return [...running,...upcoming,...past,...undated].map(x=>x.ev);
 }
 function openExpenseModal(evId){
+  if(!FEATURE_KOSTEN) return;
   const list=expensePickerEvents();
   if(!list.length){showToast('Bitte zuerst einen Termin anlegen');return;}
   const sel=document.getElementById('q_event');
@@ -2210,6 +2246,7 @@ async function saveQuickExpense(){
 
 // ── ZAHLUNG ERFASSEN ───────────────────────────────────────────────────
 function openPaymentModal(){
+  if(!FEATURE_KOSTEN) return;
   const bal=totalBalanceCents();
   const fromEl=document.getElementById('p_from');
   const amtEl=document.getElementById('p_amount');
@@ -2471,7 +2508,7 @@ function populateForm(ev){
   document.getElementById('accomContainer').innerHTML='';
   if(ev.accommodations&&ev.accommodations.length) ev.accommodations.forEach(a=>addAccom(a));
   document.getElementById('expensesContainer').innerHTML='';
-  eventExpenses(ev).forEach(x=>addExpense(x));
+  if(FEATURE_KOSTEN) eventExpenses(ev).forEach(x=>addExpense(x));
   updateExpensesSummary();
 }
 
@@ -3361,8 +3398,10 @@ async function saveEvent(){
       if(t>dateTo) dateTo=t;
     }
   }
-  const badExp=collectExpenses().find(e=>!Number.isFinite(e.amount));
-  if(badExp){showToast(`Betrag bei „${badExp.desc||'Kostenposition'}" ist keine gültige Zahl`);return;}
+  if(FEATURE_KOSTEN){
+    const badExp=collectExpenses().find(e=>!Number.isFinite(e.amount));
+    if(badExp){showToast(`Betrag bei „${badExp.desc||'Kostenposition'}" ist keine gültige Zahl`);return;}
+  }
   const existing=editId?events.find(e=>e.id===editId):null;
   const wasEdit=!!editId;
   const evId=editId||genId();
@@ -3399,7 +3438,7 @@ async function saveEvent(){
     transport:collectTransport(),
     todos:collectTodos('todosContainer'),
     accommodations:collectAccoms(),
-    expenses:collectExpenses(),
+    expenses:FEATURE_KOSTEN?collectExpenses():eventExpenses(existing||{}),
     attachments,
     subevents:collectSubs(),
     updatedAt:new Date().toISOString()
@@ -3540,7 +3579,7 @@ function openPreview(id){
       </div>`).join('')+`</div>`;
   }
 
-  const pvExps=eventExpenses(ev).filter(x=>expCents(x));
+  const pvExps=FEATURE_KOSTEN?eventExpenses(ev).filter(x=>expCents(x)):[];
   if(pvExps.length){
     const openExps=pvExps.filter(x=>!x.settledAt);
     const bal=sumBalance(openExps);
@@ -3810,6 +3849,10 @@ document.addEventListener('keydown', e=>{
   if(t.dataset.action==='flightKeydown'&&e.key==='Enter')
     lookupFlightLeg(t.dataset.lid);
 });
+
+// Ausgeblendete Funktionen abschalten, sobald das Markup steht.
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',applyFeatureFlags);
+else applyFeatureFlags();
 
 // ── SERVICE WORKER ──
 // Stand bisher als Inline-Skript in index.html und wurde dort von der CSP
