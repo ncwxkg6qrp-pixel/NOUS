@@ -290,7 +290,7 @@ function loadActivity(){try{const l=localStorage.getItem(ACT_KEY);if(l)activityL
 function saveActivity(){try{localStorage.setItem(ACT_KEY,JSON.stringify(activityLog.slice(0,200)));}catch(e){console.warn('[nous] Aktivitätslog konnte nicht gespeichert werden (Storage voll?)',e);}}
 // Das Protokoll liegt als eine Zeile pro Eintrag in nous_activity.
 // Anhängen kollidiert nie, deshalb entfällt das frühere Zusammenführen ganzer Listen.
-function actRowToEntry(r){return{id:r.id,type:r.type,evTitle:r.ev_title,detail:r.detail,ts:r.ts,user:r.actor};}
+function actRowToEntry(r){return{id:r.id,type:r.type,evTitle:r.ev_title,evId:r.ev_id||'',detail:r.detail,ts:r.ts,user:r.actor};}
 function insertActivityEntry(entry){
   if(!entry||!entry.id||activityLog.some(a=>a.id===entry.id)) return false;
   activityLog.unshift(entry);
@@ -300,17 +300,19 @@ function insertActivityEntry(entry){
   return true;
 }
 async function loadActivityFromSupabase(){
-  const{data,error}=await sb.from(T_ACT).select('id,type,ev_title,detail,ts,actor').order('ts',{ascending:false}).limit(200);
+  const{data,error}=await sb.from(T_ACT).select('id,type,ev_title,ev_id,detail,ts,actor').order('ts',{ascending:false}).limit(200);
   if(error){reportSyncError('Aktivitäten konnten nicht geladen werden',error,true);return false;}
   activityLog=(data||[]).map(actRowToEntry);
   saveActivity();
   return true;
 }
-async function logActivity(type,evTitle,detail){
-  const entry={id:'act_'+Date.now()+'_'+Math.random().toString(36).slice(2,8),type,evTitle,detail,ts:new Date().toISOString(),user:currentUser||null};
+// evId verweist auf den Termin, zu dem der Eintrag gehört. Er bleibt leer,
+// wo es keinen gibt (Zahlungen) oder keinen mehr geben kann (gelöschte Termine).
+async function logActivity(type,evTitle,detail,evId){
+  const entry={id:'act_'+Date.now()+'_'+Math.random().toString(36).slice(2,8),type,evTitle,evId:evId||'',detail,ts:new Date().toISOString(),user:currentUser||null};
   insertActivityEntry(entry);
   renderActivity();renderAktuellIfActive();
-  const{error}=await sb.from(T_ACT).insert({id:entry.id,type,ev_title:evTitle,detail,ts:entry.ts,actor:currentUser||null});
+  const{error}=await sb.from(T_ACT).insert({id:entry.id,type,ev_title:evTitle,ev_id:evId||null,detail,ts:entry.ts,actor:currentUser||null});
   if(error) reportSyncError('Aktivität konnte nicht übertragen werden',error);
 }
 async function clearActivity(){
@@ -350,6 +352,44 @@ function visibleActivity(){
   });
 }
 
+// Zu welchem Termin gehört ein Protokolleintrag? Neue Einträge führen die
+// Event-ID mit und sind damit auch nach einer Umbenennung eindeutig. Ältere
+// Einträge kennen nur den Titel; für sie wird über den Titel aufgelöst.
+// Gibt es den Termin nicht mehr, bleibt der Eintrag schlicht nicht anklickbar.
+function activityEventId(a){
+  if(!a) return '';
+  if(a.evId&&events.some(e=>e.id===a.evId)) return a.evId;
+  const title=a.evTitle||'';
+  if(!title) return '';
+  const hits=events.filter(e=>e.title===title);
+  if(hits.length===1) return hits[0].id;
+  if(!hits.length) return '';
+  // Mehrere Termine gleichen Titels: der zeitlich nächstgelegene passt am ehesten.
+  const ref=Date.parse(a.ts||'')||0;
+  const dist=e=>Math.abs((Date.parse(evPrimaryDate(e)||'')||0)-ref);
+  return hits.slice().sort((x,y)=>dist(x)-dist(y))[0].id;
+}
+
+// Gemeinsames Markup für Update-Feed und Update-Übersicht: Einträge mit
+// auflösbarem Termin öffnen dessen Vorschau.
+function activityItemHtml(a){
+  const icons={create:'+',edit:'~',delete:'×',todo:'✓',export:'↓'};
+  const iconCls={create:'ai-create',edit:'ai-edit',delete:'ai-delete',todo:'ai-todo',export:'ai-edit'};
+  const who=a.user==='toja'?'Toja':a.user==='johann'?'Johann':null;
+  const personBadge=who?`<span style="font-weight:700;color:${a.user==='toja'?'var(--toja-color)':'var(--johann-color)'}">${who}</span> · `:'';
+  const evId=activityEventId(a);
+  const link=evId?` activity-item-link" data-action="openPreview" data-ev-id="${esc(evId)}" role="button" tabindex="0" title="Termin öffnen`:'';
+  return `<div class="activity-item${link}">
+    <div class="activity-icon ${iconCls[a.type]||'ai-edit'}">${icons[a.type]||'•'}</div>
+    <div class="activity-body">
+      <div class="activity-title">${esc(a.evTitle)||'—'}</div>
+      <div class="activity-detail">${esc(a.detail)||''}</div>
+      <div class="activity-time">${personBadge}${fmtRelTime(a.ts)} · ${fmtAbsTime(a.ts)}</div>
+    </div>
+    ${evId?'<div class="activity-chevron" aria-hidden="true">›</div>':''}
+  </div>`;
+}
+
 function renderActivity(){
   const c=document.getElementById('activityFeed');if(!c)return;
   const acts=visibleActivity();
@@ -357,20 +397,7 @@ function renderActivity(){
     c.innerHTML=`<div class="activity-empty"><div class="activity-empty-text">Noch keine Aktivität aufgezeichnet</div></div>`;
     return;
   }
-  const icons={create:'+',edit:'~',delete:'×',todo:'✓',export:'↓'};
-  const iconCls={create:'ai-create',edit:'ai-edit',delete:'ai-delete',todo:'ai-todo',export:'ai-edit'};
-  c.innerHTML=acts.map(a=>{
-    const who=a.user==='toja'?'Toja':a.user==='johann'?'Johann':null;
-    const personBadge=who?`<span style="font-weight:700;color:${a.user==='toja'?'var(--toja-color)':'var(--johann-color)'}">${who}</span> · `:'';
-    return `<div class="activity-item">
-      <div class="activity-icon ${iconCls[a.type]||'ai-edit'}">${icons[a.type]||'•'}</div>
-      <div class="activity-body">
-        <div class="activity-title">${esc(a.evTitle)||'—'}</div>
-        <div class="activity-detail">${esc(a.detail)||''}</div>
-        <div class="activity-time">${personBadge}${fmtRelTime(a.ts)} · ${fmtAbsTime(a.ts)}</div>
-      </div>
-    </div>`;
-  }).join('');
+  c.innerHTML=acts.map(activityItemHtml).join('');
 }
 let activeStatusFilters=new Set(),activeOwnerFilters=new Set();
 
@@ -1335,20 +1362,7 @@ function renderAktuell(){
   if(!recentActs.length){
     html+=`<div class="aktuell-today-empty">Noch keine Aktivität aufgezeichnet</div>`;
   } else {
-    const icons={create:'+',edit:'~',delete:'×',todo:'✓',export:'↓'};
-    const iconCls={create:'ai-create',edit:'ai-edit',delete:'ai-delete',todo:'ai-todo',export:'ai-edit'};
-    html+=recentActs.map(a=>{
-      const who=a.user==='toja'?'Toja':a.user==='johann'?'Johann':null;
-      const personBadge=who?`<span style="font-weight:700;color:${a.user==='toja'?'var(--toja-color)':'var(--johann-color)'}">${who}</span> · `:'';
-      return `<div class="activity-item">
-        <div class="activity-icon ${iconCls[a.type]||'ai-edit'}">${icons[a.type]||'•'}</div>
-        <div class="activity-body">
-          <div class="activity-title">${esc(a.evTitle)||'—'}</div>
-          <div class="activity-detail">${esc(a.detail)||''}</div>
-          <div class="activity-time">${personBadge}${fmtRelTime(a.ts)} · ${fmtAbsTime(a.ts)}</div>
-        </div>
-      </div>`;
-    }).join('');
+    html+=recentActs.map(activityItemHtml).join('');
   }
   html+=`</div>`;
 
@@ -1948,7 +1962,7 @@ async function toggleTodo(evId,todoId){
   // Erst übertragen, dann protokollieren: sonst meldet das Protokoll eine
   // Änderung, die beim anderen nie angekommen ist.
   if(!await persistEvent(ev)){await reloadFromSupabase();return;}
-  logActivity('todo',ev.title,`To-do ${todo.done?'erledigt':'wieder geöffnet'}: „${todo.text}"`);
+  logActivity('todo',ev.title,`To-do ${todo.done?'erledigt':'wieder geöffnet'}: „${todo.text}"`,ev.id);
 }
 
 // CALENDAR
@@ -2239,7 +2253,7 @@ async function saveQuickExpense(){
   saveData();
   if(!await persistEvent(ev)){ev.expenses=before;saveData();return;}
   closeModal('expenseModal');
-  logActivity('edit',ev.title,`Ausgabe: ${desc} · ${fmtEur(expCents(exp))} · verauslagt ${personLabel(exp.paidBy)}`);
+  logActivity('edit',ev.title,`Ausgabe: ${desc} · ${fmtEur(expCents(exp))} · verauslagt ${personLabel(exp.paidBy)}`,ev.id);
   showToast(`${fmtEur(expCents(exp))} erfasst`);
   renderEverything();
 }
@@ -2397,7 +2411,7 @@ async function acceptInvite(id){
   }
   saveData();
   if(!await persistEvent(ev)){await reloadFromSupabase();return;}
-  logActivity('edit',ev.title,`Einladung angenommen – Termin jetzt Gemeinsam`);
+  logActivity('edit',ev.title,`Einladung angenommen – Termin jetzt Gemeinsam`,ev.id);
   showToast('Einladung angenommen');
   renderInvites();
   updateInviteBadge();
@@ -2410,7 +2424,7 @@ async function declineInvite(id){
   ev.invite.status='declined';
   saveData();
   if(!await persistEvent(ev)){await reloadFromSupabase();return;}
-  logActivity('edit',ev.title,'Einladung abgelehnt');
+  logActivity('edit',ev.title,'Einladung abgelehnt',ev.id);
   showToast('Einladung abgelehnt');
   renderInvites();
   updateInviteBadge();
@@ -3495,7 +3509,7 @@ async function saveEvent(){
   if(idx<0) events.push(ev); else events[idx]=ev;
   saveData();closeModal('eventModal');
   showToast(wasEdit?'Termin aktualisiert':'Termin gespeichert');
-  logActivity(wasEdit?'edit':'create',ev.title,detail);
+  logActivity(wasEdit?'edit':'create',ev.title,detail,ev.id);
 }
 
 // DELETE
@@ -3848,6 +3862,11 @@ document.addEventListener('keydown', e=>{
   if(!t) return;
   if(t.dataset.action==='flightKeydown'&&e.key==='Enter')
     lookupFlightLeg(t.dataset.lid);
+  // Anklickbare Update-Einträge auch per Tastatur öffnen
+  if(t.dataset.action==='openPreview'&&t.getAttribute('role')==='button'&&(e.key==='Enter'||e.key===' ')){
+    e.preventDefault();
+    openPreview(t.dataset.evId);
+  }
 });
 
 // Ausgeblendete Funktionen abschalten, sobald das Markup steht.
