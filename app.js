@@ -3669,7 +3669,7 @@ function openPreview(id){
     // Zeitleisten-Zeile: links die Uhrzeit, rechts der Eintrag.
     const tlRow=(kindCls,timeText,title,meta,extra)=>
       `<div class="pv-tl-row ${kindCls}">
-        <div class="pv-tl-time">${timeText?esc(timeText):'<span class="pv-tl-time-empty">·</span>'}</div>
+        <div class="pv-tl-time">${timeText?esc(timeText):''}</div>
         <div class="pv-tl-body">
           <div class="pv-tl-title">${title}</div>
           ${meta?`<div class="pv-tl-meta">${meta}</div>`:''}
