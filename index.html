@@ -575,6 +575,13 @@ textarea{resize:vertical;min-height:64px}
 .activity-title{font-size:0.85rem;font-weight:700;color:var(--text);margin-bottom:2px}
 .activity-detail{font-size:0.76rem;color:var(--text2);line-height:1.4}
 .activity-time{font-size:0.7rem;color:var(--text3);margin-top:3px;white-space:nowrap}
+.activity-chevron{color:var(--text3);font-size:1.15rem;line-height:1;align-self:center;flex-shrink:0}
+/* Updates mit auflösbarem Termin öffnen dessen Vorschau */
+.activity-item-link{cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s}
+.activity-item-link:hover{border-color:var(--blue);box-shadow:var(--shadow-md)}
+.activity-item-link:hover .activity-chevron{color:var(--blue)}
+.activity-item-link:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.activity-item-link:active{background:var(--surface2)}
 .activity-empty{text-align:center;padding:40px 20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)}
 .activity-empty-icon{font-size:2rem;opacity:0.25;margin-bottom:8px}
 .activity-empty-text{font-size:0.85rem;color:var(--text3)}
