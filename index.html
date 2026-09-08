@@ -233,8 +233,12 @@ header{background:var(--blue2);padding:0 16px;box-shadow:0 2px 4px rgba(0,0,0,0.
 .card-section-arrow.open{transform:rotate(180deg)}
 .card-section-body{padding:0 13px 8px;display:none}
 .card-section-body.open{display:block}
-.sub-row{display:flex;align-items:center;gap:6px;font-size:0.75rem;color:var(--text2);padding:2px 0}
-.sub-dot{width:5px;height:5px;border-radius:50%;background:var(--blue);opacity:0.5;flex-shrink:0}
+.sub-row{display:flex;align-items:flex-start;gap:6px;font-size:0.75rem;color:var(--text2);padding:2px 0}
+.sub-dot{width:5px;height:5px;border-radius:50%;background:var(--blue);opacity:0.5;flex-shrink:0;margin-top:5px}
+.pp-list{margin-top:3px;display:flex;flex-direction:column;gap:1px}
+.pp-row{display:flex;gap:8px;font-size:0.72rem;color:var(--text2);line-height:1.4}
+.pp-name{font-weight:700;flex:0 0 52px}
+.pp-range{min-width:0}
 .att-row{display:flex;gap:5px;flex-wrap:wrap}
 .att-thumb{width:36px;height:36px;border-radius:4px;background:var(--surface3);border:1px solid var(--border);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:0.9rem}
 .att-thumb img{width:100%;height:100%;object-fit:cover}
@@ -252,7 +256,7 @@ header{background:var(--blue2);padding:0 16px;box-shadow:0 2px 4px rgba(0,0,0,0.
 /* TODO PREVIEW IN CARD */
 .todo-row{display:flex;align-items:center;gap:7px;font-size:0.75rem;color:var(--text2);padding:2px 0}
 .todo-row.done{color:var(--text3);text-decoration:line-through}
-.todo-check{width:14px;height:14px;border-radius:2px;border:1.5px solid var(--border2);background:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:0.6rem}
+.todo-check{width:14px;height:14px;border-radius:2px;border:1.5px solid var(--border2);background:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:0.6rem;color:transparent}
 .todo-check.checked{background:var(--blue);border-color:var(--blue);color:#fff}
 .todo-owner-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
 .dot-toja{background:var(--toja-color)}
@@ -516,7 +520,36 @@ textarea{resize:vertical;min-height:64px}
 .pv-block{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px}
 .pv-block-title{font-size:0.7rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:7px}
 .pv-todo-row{display:flex;align-items:center;gap:6px;font-size:0.8rem;padding:3px 0}
-.pv-todo-row.done{color:var(--text3);text-decoration:line-through}
+/* ABLAUF-ZEITLEISTE: links die Uhrzeit, rechts der Eintrag */
+.pv-tl-day{font-size:0.68rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;
+  padding:9px 0 3px;position:sticky;top:0;background:var(--surface2);z-index:1}
+.pv-tl-day:first-child{padding-top:0}
+.pv-tl-row{display:grid;grid-template-columns:40px 1fr;gap:14px;padding:6px 0;border-top:1px solid var(--border)}
+.pv-tl-day+.pv-tl-row{border-top:none}
+.pv-tl-time{font-size:0.72rem;font-weight:700;color:var(--text2);text-align:left;
+  font-variant-numeric:tabular-nums;padding-top:1px;white-space:nowrap}
+.pv-tl-body{min-width:0}
+.pv-tl-title{font-size:0.82rem;font-weight:700;color:var(--text);line-height:1.35}
+.pv-tl-meta{font-size:0.72rem;color:var(--text2);margin-top:1px;line-height:1.35}
+.pv-tl-line{font-size:0.72rem;color:var(--text2);margin-top:2px;line-height:1.35;word-break:break-word}
+.pv-tl-todo{display:flex;gap:5px;align-items:center;font-size:0.72rem;padding:1px 0}
+.pv-tl-todo.done{color:var(--text3)}
+.pv-tl-todo.done>span:nth-of-type(2){text-decoration:line-through}
+/* Farbmarke je Art, damit die Zeile ohne Beschriftung zuzuordnen ist */
+.pv-tl-body{border-left:2px solid transparent;padding-left:9px}
+.tl-an .pv-tl-body{border-color:var(--green)}
+.tl-ab .pv-tl-body{border-color:var(--red)}
+.tl-accom .pv-tl-body{border-color:#9b7ec8}
+.tl-sub .pv-tl-body{border-color:var(--blue)}
+/* Orte hier als ruhiger Link statt als gefüllter Chip: in einer Zeitleiste
+   säßen sonst in jeder Zeile ein bis zwei blaue Kästen. */
+.pv-tl .nav-btn-loc{display:inline;background:none;border:none;border-radius:0;padding:1px 0;
+  font-size:inherit;font-weight:600;color:var(--blue);white-space:normal;overflow:visible;
+  max-width:none;text-overflow:clip;vertical-align:baseline;
+  text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px}
+.pv-tl .nav-btn-loc:hover{background:none;color:var(--blue2)}
+.pv-todo-row.done{color:var(--text3)}
+.pv-todo-row.done>span:first-of-type{text-decoration:line-through}
 
 /* TOAST */
 /* CONFIRM DIALOG */

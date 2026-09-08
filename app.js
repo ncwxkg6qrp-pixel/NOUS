@@ -1545,10 +1545,10 @@ function personLabel(p){return p==='toja'?'Toja':'Johann';}
 function personDatesHtml(ev){
   if(!hasPersonDates(ev)) return '';
   const col={toja:'var(--toja-color)',johann:'var(--johann-color)'};
-  return PERSONS.map(p=>{
+  return `<div class="pp-list">`+PERSONS.map(p=>{
     const r=personRange(ev,p);
-    return `<span style="color:${col[p]};font-weight:700">${personLabel(p)}</span> ${fmtD(r.from)} – ${fmtD(r.to)}`;
-  }).join(' &nbsp;·&nbsp; ');
+    return `<div class="pp-row"><span class="pp-name" style="color:${col[p]}">${personLabel(p)}</span><span class="pp-range">${fmtDShort(r.from)} – ${fmtDShort(r.to)}</span></div>`;
+  }).join('')+`</div>`;
 }
 
 const CONFLICT_SK='nous_dismissed_conflicts_v1';
@@ -1670,6 +1670,7 @@ function bulkExport(){showToast('Export wurde deaktiviert');}
 function esc(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function safeUrl(url){if(!url)return '';const u=url.trim();return /^https?:\/\//i.test(u)?u:'';}
 function fmtD(d){if(!d)return '';const dt=new Date(d+'T00:00:00');const wd=dt.toLocaleDateString('de-DE',{weekday:'short'});return wd+', '+dt.toLocaleDateString('de-DE',{day:'2-digit',month:'short',year:'numeric'});}
+function fmtDShort(d){if(!d)return '';const dt=new Date(d+'T00:00:00');const wd=dt.toLocaleDateString('de-DE',{weekday:'short'});return wd+', '+dt.toLocaleDateString('de-DE',{day:'2-digit',month:'short'});}
 function nowTs(){return new Date().toISOString().replace(/[-:]/g,'').slice(0,15)+'Z';}
 function genId(){return 'ev_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);}
 function genUid(){return 'nous-'+Date.now()+'-'+Math.random().toString(36).slice(2,9)+'@nous.app';}
@@ -1697,6 +1698,86 @@ function syncSubDates(){
 
 // RENDER
 function evPrimaryDate(e){return e.multiday?(e.dateFrom||''):(e.date||e.dateFrom||'');}
+
+// ── TRANSPORT: BEIDE PERSONEN ZU EINER LISTE ───────────────────────────
+// Fahren beide dieselbe Strecke, soll sie einmal als „Beide" erscheinen und
+// nicht zweimal je Person. Zusammengeführt wird über den Haken „gemeinsam"
+// und, wo der fehlt, über Flug-/Zugnummer bzw. Notiz.
+function legMatchKey(leg){
+  if(!leg||!leg.type) return null;
+  if(leg.type==='flug'){const n=(leg.data?.num||'').trim();return n?`flug_${n.toLowerCase()}`:null;}
+  if(leg.type==='zug'){const n=(leg.data?.num||'').trim();return n?`zug_${n.toLowerCase()}`:null;}
+  if(leg.type==='auto') return `auto_${(leg.note||'').trim().toLowerCase()}`;
+  if(leg.type==='sonstiges'){const n=(leg.note||'').trim();return n?`son_${n.toLowerCase()}`:null;}
+  return null;
+}
+function legTime(leg){return leg?.data?.dep||leg?.data?.time||'';}
+function sortLegsByTime(legs){return [...legs].sort((a,b)=>legTime(a).localeCompare(legTime(b)));}
+function mergeLegs(tRaw,jRaw){
+  const tLegs=sortLegsByTime(Array.isArray(tRaw)?tRaw:(tRaw&&tRaw.type?[tRaw]:[]));
+  const jLegs=sortLegsByTime(Array.isArray(jRaw)?jRaw:(jRaw&&jRaw.type?[jRaw]:[]));
+  const usedT=new Set(),usedJ=new Set(),out=[];
+  tLegs.forEach((l,i)=>{if(l?.sharedWithBoth){out.push({leg:l,who:'beide'});usedT.add(i);}});
+  jLegs.forEach((l,i)=>{if(l?.sharedWithBoth&&!usedJ.has(i)){out.push({leg:l,who:'beide'});usedJ.add(i);}});
+  const tMap=new Map();
+  tLegs.forEach((l,i)=>{if(!usedT.has(i)&&l){const k=legMatchKey(l);if(k)tMap.set(k,i);}});
+  jLegs.forEach((l,i)=>{if(!usedJ.has(i)&&l){const k=legMatchKey(l);if(k&&tMap.has(k)){const ti=tMap.get(k);out.push({leg:tLegs[ti],who:'beide'});usedT.add(ti);usedJ.add(i);}}});
+  tLegs.forEach((l,i)=>{if(!usedT.has(i)&&l?.type)out.push({leg:l,who:'toja'});});
+  jLegs.forEach((l,i)=>{if(!usedJ.has(i)&&l?.type)out.push({leg:l,who:'johann'});});
+  return out.sort((a,b)=>legTime(a.leg).localeCompare(legTime(b.leg)));
+}
+
+// ── ZEITLEISTE EINES TERMINS ───────────────────────────────────────────
+// Anreise, Unterkunft, Sub-Events und Abreise standen bisher nach Kategorie
+// sortiert untereinander — die Abreise also vor den Sub-Events, die sie
+// zeitlich abschließt. Hier werden sie stattdessen in die Reihenfolge
+// gebracht, in der sie tatsächlich stattfinden, und nach Tagen gruppiert.
+//
+// Nicht jeder Eintrag trägt ein Datum: Auto- und Sonstiges-Etappen haben
+// keines, und Zeiten dürfen fehlen. Fehlt das Datum, wird es aus der
+// Richtung erschlossen (Anreise → erster Tag, Abreise → letzter Tag);
+// fehlt die Uhrzeit, ordnet die Art den Eintrag innerhalb des Tages ein.
+const TL_PRIO={an:0,checkin:1,accom:1,sub:2,checkout:3,ab:4};
+const TL_FALLBACK_TIME={an:'00:00',checkin:'00:01',accom:'00:01',sub:'00:02',checkout:'23:58',ab:'23:59'};
+function evFirstDate(ev){return ev.multiday?(ev.dateFrom||ev.date||''):(ev.date||ev.dateFrom||'');}
+function evLastDate(ev){return ev.multiday?(ev.dateTo||ev.dateFrom||ev.date||''):(ev.date||ev.dateFrom||'');}
+function buildEventTimeline(ev){
+  const items=[];
+  const push=(kind,date,time,payload)=>{
+    items.push(Object.assign({kind,date:date||'',time:time||'',
+      sortTime:time||TL_FALLBACK_TIME[kind]||'12:00',prio:TL_PRIO[kind]??2},payload));
+  };
+  const tr=ev.transport||{};
+  DIRS.forEach(d=>{
+    const fallback=d==='an'?evFirstDate(ev):evLastDate(ev);
+    mergeLegs(tr.toja?.[d]||[],tr.johann?.[d]||[]).forEach(({leg,who})=>{
+      push(d,leg.data?.date||fallback,legTime(leg)||leg.eta||'',{leg,who,dir:d});
+    });
+  });
+  (ev.accommodations||[]).forEach(a=>{
+    if(a.cinDate||a.coutDate){
+      if(a.cinDate||a.cinTime) push('checkin',a.cinDate||evFirstDate(ev),a.cinTime,{accom:a});
+      if(a.coutDate||a.coutTime) push('checkout',a.coutDate||evLastDate(ev),a.coutTime,{accom:a});
+    } else {
+      // Ohne Datumsangabe lässt sich kein Check-in erfinden: die Unterkunft
+      // erscheint dann als ein Eintrag zu Beginn des Termins.
+      push('accom',evFirstDate(ev),'',{accom:a});
+    }
+  });
+  (ev.subevents||[]).forEach(sub=>{ push('sub',sub.date,sub.time,{sub}); });
+
+  const dated=items.filter(i=>i.date).sort((a,b)=>
+    a.date.localeCompare(b.date)||a.sortTime.localeCompare(b.sortTime)||a.prio-b.prio);
+  const undated=items.filter(i=>!i.date);
+  const days=[];
+  dated.forEach(i=>{
+    const last=days[days.length-1];
+    if(last&&last.date===i.date) last.items.push(i);
+    else days.push({date:i.date,items:[i]});
+  });
+  return {days,undated,count:items.length};
+}
+
 function timeToMin(t){if(!t)return -1;const[h,m]=t.split(':').map(Number);return h*60+m;}
 
 function renderAll(){
@@ -1775,6 +1856,11 @@ function renderCard(e){
   const isM=e.multiday;
   const ds=isM?`${fmtD(e.dateFrom)} – ${fmtD(e.dateTo)}`:fmtD(e.date);
   const ppHtml=personDatesHtml(e);
+  // In den Abschnitten der Karte steht das Jahr schon in der Kopfzeile darüber.
+  // Weggelassen wird es nur, solange alles im selben Jahr liegt — ein Termin
+  // über den Jahreswechsel behält die volle Angabe.
+  const cardYear=(evPrimaryDate(e)||'').slice(0,4);
+  const fmtDCard=d=>((d||'').slice(0,4)===cardYear?fmtDShort(d):fmtD(d));
   const ts=(!e.allday&&e.time)?e.time+' Uhr':'Ganztägig';
   const sel=selIds.has(e.id);
   const effStatus=effectiveStatus(e);
@@ -1793,7 +1879,7 @@ function renderCard(e){
         <span class="card-section-arrow">▾</span>
       </div>
       <div class="card-section-body">
-        ${sortedSubs.slice(0,3).map(s=>`<div class="sub-row"><div class="sub-dot"></div><span>${esc(s.title)||'—'}${s.date?' · '+fmtD(s.date):''}${s.time?' · '+esc(s.time):''}</span></div>`).join('')}
+        ${sortedSubs.slice(0,3).map(s=>`<div class="sub-row"><div class="sub-dot"></div><span>${esc(s.title)||'—'}${s.date?' · '+fmtDCard(s.date):''}${s.time?' · '+esc(s.time):''}</span></div>`).join('')}
         ${e.subevents.length>3?`<div style="font-size:0.72rem;color:var(--text3);margin-top:2px">+${e.subevents.length-3} weitere</div>`:''}
       </div>
     </div>`;
@@ -1827,31 +1913,9 @@ function renderCard(e){
     if(leg.type==='sonstiges') return `⋯ ${esc(leg.note)||''}`;
     return '';
   };
-  const cardMatchKey=leg=>{
-    if(!leg||!leg.type) return null;
-    if(leg.type==='flug'){const n=(leg.data?.num||'').trim();return n?`flug_${n.toLowerCase()}`:null;}
-    if(leg.type==='zug'){const n=(leg.data?.num||'').trim();return n?`zug_${n.toLowerCase()}`:null;}
-    if(leg.type==='auto') return `auto_${(leg.note||'').trim().toLowerCase()}`;
-    if(leg.type==='sonstiges'){const n=(leg.note||'').trim();return n?`son_${n.toLowerCase()}`:null;}
-    return null;
-  };
-  const sortLegs=legs=>[...legs].sort((a,b)=>((a.data?.dep||a.data?.time||'')).localeCompare(b.data?.dep||b.data?.time||''));
-  const buildChronoLegs=(tRaw,jRaw)=>{
-    const tLegs=sortLegs(Array.isArray(tRaw)?tRaw:(tRaw&&tRaw.type?[tRaw]:[]));
-    const jLegs=sortLegs(Array.isArray(jRaw)?jRaw:(jRaw&&jRaw.type?[jRaw]:[]));
-    const usedT=new Set(),usedJ=new Set(),out=[];
-    tLegs.forEach((l,i)=>{if(l?.sharedWithBoth){out.push({leg:l,who:'beide'});usedT.add(i);}});
-    jLegs.forEach((l,i)=>{if(l?.sharedWithBoth&&!usedJ.has(i)){out.push({leg:l,who:'beide'});usedJ.add(i);}});
-    const tMap=new Map();
-    tLegs.forEach((l,i)=>{if(!usedT.has(i)&&l){const k=cardMatchKey(l);if(k)tMap.set(k,i);}});
-    jLegs.forEach((l,i)=>{if(!usedJ.has(i)&&l){const k=cardMatchKey(l);if(k&&tMap.has(k)){const ti=tMap.get(k);out.push({leg:tLegs[ti],who:'beide'});usedT.add(ti);usedJ.add(i);}}});
-    tLegs.forEach((l,i)=>{if(!usedT.has(i)&&l?.type)out.push({leg:l,who:'toja'});});
-    jLegs.forEach((l,i)=>{if(!usedJ.has(i)&&l?.type)out.push({leg:l,who:'johann'});});
-    return out.sort((a,b)=>(a.leg.data?.dep||a.leg.data?.time||'').localeCompare(b.leg.data?.dep||b.leg.data?.time||''));
-  };
   const trWhoColor={beide:'var(--purple)',toja:'var(--toja-color)',johann:'var(--johann-color)'};
   const trWhoLabel={beide:'Beide',toja:'Toja',johann:'Johann'};
-  const trRows={an:buildChronoLegs((tr.toja?.an||[]),(tr.johann?.an||[])),ab:buildChronoLegs((tr.toja?.ab||[]),(tr.johann?.ab||[]))};
+  const trRows={an:mergeLegs(tr.toja?.an||[],tr.johann?.an||[]),ab:mergeLegs(tr.toja?.ab||[],tr.johann?.ab||[])};
   const hasAn=trRows.an.length>0,hasAb=trRows.ab.length>0;
   if(hasAn||hasAb){
     const trCount=trRows.an.length+trRows.ab.length;
@@ -1898,7 +1962,7 @@ function renderCard(e){
         <span class="card-section-arrow">▾</span>
       </div>
       <div class="card-section-body">
-        ${e.accommodations.slice(0,2).map(a=>{const sl=safeUrl(a.link);return `<div class="sub-row" style="flex-direction:column;align-items:flex-start;gap:2px"><div style="display:flex;align-items:center;gap:6px"><div class="sub-dot" style="background:#9b7ec8;opacity:0.7;flex-shrink:0"></div><span>${esc(a.name)||'—'}${a.cinDate?' · '+fmtD(a.cinDate):''}${a.coutDate?' – '+fmtD(a.coutDate):''}</span></div>${a.ref?`<div style="font-size:0.72rem;color:var(--text2);padding-left:14px">Ref: <span style="font-family:monospace">${esc(a.ref)}</span></div>`:''}${sl?`<div style="padding-left:14px"><a href="${sl}" target="_blank" rel="noopener noreferrer" style="font-size:0.72rem;color:var(--blue)">🔗 Buchungslink</a></div>`:''}</div>`;}).join('')}
+        ${e.accommodations.slice(0,2).map(a=>{const sl=safeUrl(a.link);return `<div class="sub-row" style="flex-direction:column;align-items:flex-start;gap:2px"><div style="display:flex;align-items:flex-start;gap:6px"><div class="sub-dot" style="background:#9b7ec8;opacity:0.7;flex-shrink:0"></div><span>${esc(a.name)||'—'}${a.cinDate?' · '+fmtDCard(a.cinDate):''}${a.coutDate?' – '+fmtDCard(a.coutDate):''}</span></div>${a.ref?`<div style="font-size:0.72rem;color:var(--text2);padding-left:14px">Ref: <span style="font-family:monospace">${esc(a.ref)}</span></div>`:''}${sl?`<div style="padding-left:14px"><a href="${sl}" target="_blank" rel="noopener noreferrer" style="font-size:0.72rem;color:var(--blue)">🔗 Buchungslink</a></div>`:''}</div>`;}).join('')}
       </div>
     </div>`;
   }
@@ -1927,7 +1991,7 @@ function renderCard(e){
           <span>${ds}</span>
           ${!isM?`<span>${ts}</span>`:''}
         </div>
-        ${ppHtml?`<div class="card-meta" style="margin-top:2px;font-size:0.72rem">${ppHtml}</div>`:''}
+        ${ppHtml||''}
         ${e.location?`<div class="card-meta" style="margin-top:2px">${navLink(e.location)}</div>`:''}
       </div>
       <div class="card-right">
@@ -3616,76 +3680,83 @@ function openPreview(id){
     </div>`;
   }
 
-  const tr=ev.transport||{};
-  const pvLegRow=leg=>{
-    if(leg.type==='flug'&&leg.data){const f=leg.data;return (`${esc(f.num)}${f.from&&f.to?' · '+navLink(f.from,f.from)+'→'+navLink(f.to,f.to):''}${f.dep?' · '+esc(f.dep):''}${f.arr?'–'+esc(f.arr):''}`).trim();}
-    if(leg.type==='zug'&&leg.data){const t=leg.data;return (`${esc(t.num)}${t.from&&t.to?' · '+navLink(t.from,t.from)+'→'+navLink(t.to,t.to):''}${t.dep?' · '+esc(t.dep):''}${t.arr?'–'+esc(t.arr):''}`).trim();}
-    return [leg.eta?'ETA '+esc(leg.eta):'',leg.note?esc(leg.note):''].filter(Boolean).join(' · ')||'Auto';
-  };
-  const pvMatchKey=leg=>{
-    if(!leg||!leg.type) return null;
-    if(leg.type==='flug'){const n=(leg.data?.num||'').trim();return n?`flug_${n.toLowerCase()}`:null;}
-    if(leg.type==='zug'){const n=(leg.data?.num||'').trim();return n?`zug_${n.toLowerCase()}`:null;}
-    if(leg.type==='auto') return `auto_${(leg.note||'').trim().toLowerCase()}`;
-    if(leg.type==='sonstiges'){const n=(leg.note||'').trim();return n?`son_${n.toLowerCase()}`:null;}
-    return null;
-  };
-  const pvSortLegs=legs=>[...legs].sort((a,b)=>(a.data?.dep||a.data?.time||'').localeCompare(b.data?.dep||b.data?.time||''));
-  const pvBuildChronoLegs=(tRaw,jRaw)=>{
-    const tLegs=pvSortLegs(Array.isArray(tRaw)?tRaw:(tRaw&&tRaw.type?[tRaw]:[]));
-    const jLegs=pvSortLegs(Array.isArray(jRaw)?jRaw:(jRaw&&jRaw.type?[jRaw]:[]));
-    const usedT=new Set(),usedJ=new Set(),out=[];
-    tLegs.forEach((l,i)=>{if(l?.sharedWithBoth){out.push({leg:l,who:'beide'});usedT.add(i);}});
-    jLegs.forEach((l,i)=>{if(l?.sharedWithBoth&&!usedJ.has(i)){out.push({leg:l,who:'beide'});usedJ.add(i);}});
-    const tMap=new Map();
-    tLegs.forEach((l,i)=>{if(!usedT.has(i)&&l){const k=pvMatchKey(l);if(k)tMap.set(k,i);}});
-    jLegs.forEach((l,i)=>{if(!usedJ.has(i)&&l){const k=pvMatchKey(l);if(k&&tMap.has(k)){const ti=tMap.get(k);out.push({leg:tLegs[ti],who:'beide'});usedT.add(ti);usedJ.add(i);}}});
-    tLegs.forEach((l,i)=>{if(!usedT.has(i)&&l?.type)out.push({leg:l,who:'toja'});});
-    jLegs.forEach((l,i)=>{if(!usedJ.has(i)&&l?.type)out.push({leg:l,who:'johann'});});
-    return out.sort((a,b)=>(a.leg.data?.dep||a.leg.data?.time||'').localeCompare(b.leg.data?.dep||b.leg.data?.time||''));
-  };
-  const pvWhoColor={beide:'var(--purple)',toja:'var(--toja-color)',johann:'var(--johann-color)'};
-  const pvWhoLabel={beide:'Beide',toja:'Toja',johann:'Johann'};
-  const pvTrRows={an:pvBuildChronoLegs(tr.toja?.an||[],tr.johann?.an||[]),ab:pvBuildChronoLegs(tr.toja?.ab||[],tr.johann?.ab||[])};
-  const hasTr=pvTrRows.an.length>0||pvTrRows.ab.length>0;
-  if(hasTr){
-    html+=`<div class="pv-block" style="margin-bottom:8px"><div class="pv-block-title">Transport</div>`;
-    DIRS.forEach(d=>{
-      const rows=pvTrRows[d];
-      if(!rows.length)return;
-      const label=d==='an'?'Anreise':'Abreise';
-      html+=`<div style="font-size:0.68rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin:6px 0 3px">${label}</div>`;
-      rows.forEach(({leg,who})=>{
-        const s=pvLegRow(leg);
-        if(!s)return;
-        html+=`<div style="font-size:0.78rem;margin-bottom:3px"><span style="font-weight:700;color:${pvWhoColor[who]}">${pvWhoLabel[who]}</span> <span style="color:var(--text2)">${s}</span></div>`;
-      });
+  // ── ABLAUF ───────────────────────────────────────────────────────────
+  // Eine Zeitleiste statt getrennter Blöcke für Transport, Unterkunft und
+  // Sub-Events: Die Einträge stehen in der Reihenfolge, in der sie
+  // stattfinden, bei mehrtägigen Terminen nach Tagen gruppiert.
+  const tl=buildEventTimeline(ev);
+  if(tl.count){
+    const tlWhoColor={beide:'var(--purple)',toja:'var(--toja-color)',johann:'var(--johann-color)'};
+    const tlWhoLabel={beide:'Beide',toja:'Toja',johann:'Johann'};
+    const legTypeLabel={flug:'Flug',zug:'Zug',auto:'Auto',sonstiges:'Sonstiges'};
+
+    // Zeitleisten-Zeile: links die Uhrzeit, rechts der Eintrag.
+    const tlRow=(kindCls,timeText,title,meta,extra)=>
+      `<div class="pv-tl-row ${kindCls}">
+        <div class="pv-tl-time">${timeText?esc(timeText):''}</div>
+        <div class="pv-tl-body">
+          <div class="pv-tl-title">${title}</div>
+          ${meta?`<div class="pv-tl-meta">${meta}</div>`:''}
+          ${extra||''}
+        </div>
+      </div>`;
+
+    const legTitle=leg=>{
+      const d=leg.data||{};
+      if(leg.type==='flug'||leg.type==='zug'){
+        const route=d.from&&d.to?`${navLink(d.from,d.from)} → ${navLink(d.to,d.to)}`:'';
+        return [esc(d.num)||legTypeLabel[leg.type],route].filter(Boolean).join(' · ');
+      }
+      return esc(leg.note)||legTypeLabel[leg.type]||'Transport';
+    };
+    const legMeta=(leg,who,dir,i_time)=>{
+      const d=leg.data||{};
+      const parts=[`<span style="font-weight:700;color:${tlWhoColor[who]}">${tlWhoLabel[who]}</span>`,
+                   dir==='an'?'Anreise':'Abreise'];
+      if(d.arr) parts.push('an '+esc(d.arr));
+      if(leg.type==='auto'&&leg.eta&&!i_time) parts.push('ETA '+esc(leg.eta));
+      if(leg.type!=='auto'&&leg.type!=='sonstiges'&&leg.note) parts.push(esc(leg.note));
+      return parts.join(' · ');
+    };
+    const accomExtra=a=>{
+      const sl=safeUrl(a.link);
+      return [a.addr?`<div class="pv-tl-line">${navLink(a.addr)}</div>`:'',
+        a.ref?`<div class="pv-tl-line">Buchungsreferenz: <span style="font-family:monospace;color:var(--text)">${esc(a.ref)}</span></div>`:'',
+        sl?`<div class="pv-tl-line"><a href="${sl}" target="_blank" rel="noopener noreferrer" style="color:var(--blue)">🔗 Buchungslink</a></div>`:'',
+        a.notes?`<div class="pv-tl-line">${esc(a.notes)}</div>`:''].filter(Boolean).join('');
+    };
+    const subExtra=sub=>!(sub.todos&&sub.todos.length)?'':
+      `<div class="pv-tl-line">`+sub.todos.map(t=>`<div class="pv-tl-todo${t.done?' done':''}">
+        <span>${t.done?'✓':'○'}</span><span>${esc(t.text)}</span>
+        <span style="color:${ownerColors[t.owner||'beide']};font-weight:700">${ownerLabels[t.owner||'beide']}</span>
+      </div>`).join('')+`</div>`;
+
+    const itemHtml=i=>{
+      if(i.kind==='an'||i.kind==='ab')
+        return tlRow('tl-'+i.kind,i.time,legTitle(i.leg),legMeta(i.leg,i.who,i.dir,i.time),'');
+      if(i.kind==='checkin'||i.kind==='accom')
+        return tlRow('tl-accom',i.time,
+          `${i.kind==='checkin'?'Check-in':'Unterkunft'} · ${esc(i.accom.name)||'—'}`,
+          i.accom.coutDate?'bis '+fmtD(i.accom.coutDate)+(i.accom.coutTime?', '+esc(i.accom.coutTime):''):'',
+          accomExtra(i.accom));
+      if(i.kind==='checkout')
+        return tlRow('tl-accom',i.time,`Check-out · ${esc(i.accom.name)||'—'}`,'','');
+      const sub=i.sub;
+      const meta=[sub.timeEnd?'bis '+esc(sub.timeEnd):'',sub.location?navLink(sub.location):''].filter(Boolean).join(' · ');
+      return tlRow('tl-sub',i.time,esc(sub.title)||'—',meta,subExtra(sub));
+    };
+
+    // Tagesüberschriften nur, wenn der Termin mehrere Tage berührt.
+    const multiDay=tl.days.length>1;
+    html+=`<div class="pv-block" style="margin-bottom:8px"><div class="pv-block-title">Ablauf</div><div class="pv-tl">`;
+    tl.days.forEach(day=>{
+      if(multiDay) html+=`<div class="pv-tl-day">${fmtD(day.date)}</div>`;
+      html+=day.items.map(itemHtml).join('');
     });
-    html+=`</div>`;
-  }
-
-  if(ev.subevents&&ev.subevents.length){
-    const sortedSubs=[...ev.subevents].sort((a,b)=>((a.date||'')+(a.time||'')).localeCompare((b.date||'')+(b.time||'')));
-    html+=`<div class="pv-block" style="margin-bottom:8px"><div class="pv-block-title">Subevents (${ev.subevents.length})</div>`+
-      sortedSubs.map(s=>`<div style="border-bottom:1px solid var(--border);padding:7px 0;last-child{border:none}">
-        <div style="font-size:0.85rem;font-weight:700;color:var(--text)">${esc(s.title)||'—'}</div>
-        <div style="font-size:0.78rem;color:var(--text2)">${fmtD(s.date)}${s.time?' · '+esc(s.time):''} ${s.timeEnd?'– '+esc(s.timeEnd):''} ${s.location?'· '+navLink(s.location):''}</div>
-        ${s.todos&&s.todos.length?`<div style="margin-top:4px">`+s.todos.map(t=>`<div style="font-size:0.75rem;color:${t.done?'var(--text3)':'var(--text2)'};text-decoration:${t.done?'line-through':'none'};display:flex;gap:5px;align-items:center;padding:1px 0">
-          <span>${t.done?'✓':'○'}</span><span>${esc(t.text)}</span><span style="color:${ownerColors[t.owner||'beide']};font-weight:700;font-size:0.68rem">${ownerLabels[t.owner||'beide']}</span></div>`).join('')+'</div>':''}
-      </div>`).join('')+`</div>`;
-  }
-
-  if(ev.accommodations&&ev.accommodations.length){
-    html+=`<div class="pv-block" style="margin-bottom:8px"><div class="pv-block-title">Unterkunft</div>`+
-      ev.accommodations.map(a=>`<div style="font-size:0.78rem;padding:4px 0;border-bottom:1px solid var(--border)">
-        <strong style="color:var(--text)">${esc(a.name)||'—'}</strong>
-        ${a.cinDate||a.coutDate?`<span style="color:var(--text2)"> · ${a.cinDate?fmtD(a.cinDate):''}${a.coutDate?' – '+fmtD(a.coutDate):''}</span>`:''}
-        ${a.cinTime||a.coutTime?`<div style="color:var(--text2);margin-top:1px">${a.cinTime?'Check-in: '+esc(a.cinTime):''}${a.cinTime&&a.coutTime?' · ':''}${a.coutTime?'Check-out: '+esc(a.coutTime):''}</div>`:''}
-        ${a.addr?`<div style="margin-top:3px">${navLink(a.addr)}</div>`:''}
-        ${a.ref?`<div style="margin-top:2px;color:var(--text2)">Buchungsreferenz: <span style="font-family:monospace;color:var(--text)">${esc(a.ref)}</span></div>`:''}
-        ${(sl=>sl?`<div style="margin-top:2px"><a href="${sl}" target="_blank" rel="noopener noreferrer" style="color:var(--blue);font-size:0.75rem;word-break:break-all">🔗 Buchungslink</a></div>`:'')(safeUrl(a.link))}
-        ${a.notes?`<div style="color:var(--text2);margin-top:2px">${esc(a.notes)}</div>`:''}
-      </div>`).join('')+`</div>`;
+    if(tl.undated.length){
+      html+=`<div class="pv-tl-day">Ohne Datum</div>`+tl.undated.map(itemHtml).join('');
+    }
+    html+=`</div></div>`;
   }
 
   if(ev.attachments&&ev.attachments.length){
