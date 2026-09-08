@@ -1527,10 +1527,10 @@ function personLabel(p){return p==='toja'?'Toja':'Johann';}
 function personDatesHtml(ev){
   if(!hasPersonDates(ev)) return '';
   const col={toja:'var(--toja-color)',johann:'var(--johann-color)'};
-  return PERSONS.map(p=>{
+  return `<div class="pp-list">`+PERSONS.map(p=>{
     const r=personRange(ev,p);
-    return `<span style="color:${col[p]};font-weight:700">${personLabel(p)}</span> ${fmtD(r.from)} – ${fmtD(r.to)}`;
-  }).join(' &nbsp;·&nbsp; ');
+    return `<div class="pp-row"><span class="pp-name" style="color:${col[p]}">${personLabel(p)}</span><span class="pp-range">${fmtDShort(r.from)} – ${fmtDShort(r.to)}</span></div>`;
+  }).join('')+`</div>`;
 }
 
 const CONFLICT_SK='nous_dismissed_conflicts_v1';
@@ -1652,6 +1652,7 @@ function bulkExport(){showToast('Export wurde deaktiviert');}
 function esc(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function safeUrl(url){if(!url)return '';const u=url.trim();return /^https?:\/\//i.test(u)?u:'';}
 function fmtD(d){if(!d)return '';const dt=new Date(d+'T00:00:00');const wd=dt.toLocaleDateString('de-DE',{weekday:'short'});return wd+', '+dt.toLocaleDateString('de-DE',{day:'2-digit',month:'short',year:'numeric'});}
+function fmtDShort(d){if(!d)return '';const dt=new Date(d+'T00:00:00');const wd=dt.toLocaleDateString('de-DE',{weekday:'short'});return wd+', '+dt.toLocaleDateString('de-DE',{day:'2-digit',month:'short'});}
 function nowTs(){return new Date().toISOString().replace(/[-:]/g,'').slice(0,15)+'Z';}
 function genId(){return 'ev_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);}
 function genUid(){return 'nous-'+Date.now()+'-'+Math.random().toString(36).slice(2,9)+'@nous.app';}
@@ -1837,6 +1838,11 @@ function renderCard(e){
   const isM=e.multiday;
   const ds=isM?`${fmtD(e.dateFrom)} – ${fmtD(e.dateTo)}`:fmtD(e.date);
   const ppHtml=personDatesHtml(e);
+  // In den Abschnitten der Karte steht das Jahr schon in der Kopfzeile darüber.
+  // Weggelassen wird es nur, solange alles im selben Jahr liegt — ein Termin
+  // über den Jahreswechsel behält die volle Angabe.
+  const cardYear=(evPrimaryDate(e)||'').slice(0,4);
+  const fmtDCard=d=>((d||'').slice(0,4)===cardYear?fmtDShort(d):fmtD(d));
   const ts=(!e.allday&&e.time)?e.time+' Uhr':'Ganztägig';
   const sel=selIds.has(e.id);
   const effStatus=effectiveStatus(e);
@@ -1855,7 +1861,7 @@ function renderCard(e){
         <span class="card-section-arrow">▾</span>
       </div>
       <div class="card-section-body">
-        ${sortedSubs.slice(0,3).map(s=>`<div class="sub-row"><div class="sub-dot"></div><span>${esc(s.title)||'—'}${s.date?' · '+fmtD(s.date):''}${s.time?' · '+esc(s.time):''}</span></div>`).join('')}
+        ${sortedSubs.slice(0,3).map(s=>`<div class="sub-row"><div class="sub-dot"></div><span>${esc(s.title)||'—'}${s.date?' · '+fmtDCard(s.date):''}${s.time?' · '+esc(s.time):''}</span></div>`).join('')}
         ${e.subevents.length>3?`<div style="font-size:0.72rem;color:var(--text3);margin-top:2px">+${e.subevents.length-3} weitere</div>`:''}
       </div>
     </div>`;
@@ -1938,7 +1944,7 @@ function renderCard(e){
         <span class="card-section-arrow">▾</span>
       </div>
       <div class="card-section-body">
-        ${e.accommodations.slice(0,2).map(a=>{const sl=safeUrl(a.link);return `<div class="sub-row" style="flex-direction:column;align-items:flex-start;gap:2px"><div style="display:flex;align-items:center;gap:6px"><div class="sub-dot" style="background:#9b7ec8;opacity:0.7;flex-shrink:0"></div><span>${esc(a.name)||'—'}${a.cinDate?' · '+fmtD(a.cinDate):''}${a.coutDate?' – '+fmtD(a.coutDate):''}</span></div>${a.ref?`<div style="font-size:0.72rem;color:var(--text2);padding-left:14px">Ref: <span style="font-family:monospace">${esc(a.ref)}</span></div>`:''}${sl?`<div style="padding-left:14px"><a href="${sl}" target="_blank" rel="noopener noreferrer" style="font-size:0.72rem;color:var(--blue)">🔗 Buchungslink</a></div>`:''}</div>`;}).join('')}
+        ${e.accommodations.slice(0,2).map(a=>{const sl=safeUrl(a.link);return `<div class="sub-row" style="flex-direction:column;align-items:flex-start;gap:2px"><div style="display:flex;align-items:flex-start;gap:6px"><div class="sub-dot" style="background:#9b7ec8;opacity:0.7;flex-shrink:0"></div><span>${esc(a.name)||'—'}${a.cinDate?' · '+fmtDCard(a.cinDate):''}${a.coutDate?' – '+fmtDCard(a.coutDate):''}</span></div>${a.ref?`<div style="font-size:0.72rem;color:var(--text2);padding-left:14px">Ref: <span style="font-family:monospace">${esc(a.ref)}</span></div>`:''}${sl?`<div style="padding-left:14px"><a href="${sl}" target="_blank" rel="noopener noreferrer" style="font-size:0.72rem;color:var(--blue)">🔗 Buchungslink</a></div>`:''}</div>`;}).join('')}
       </div>
     </div>`;
   }
@@ -1967,7 +1973,7 @@ function renderCard(e){
           <span>${ds}</span>
           ${!isM?`<span>${ts}</span>`:''}
         </div>
-        ${ppHtml?`<div class="card-meta" style="margin-top:2px;font-size:0.72rem">${ppHtml}</div>`:''}
+        ${ppHtml||''}
         ${e.location?`<div class="card-meta" style="margin-top:2px">${navLink(e.location)}</div>`:''}
       </div>
       <div class="card-right">

@@ -233,8 +233,12 @@ header{background:var(--blue2);padding:0 16px;box-shadow:0 2px 4px rgba(0,0,0,0.
 .card-section-arrow.open{transform:rotate(180deg)}
 .card-section-body{padding:0 13px 8px;display:none}
 .card-section-body.open{display:block}
-.sub-row{display:flex;align-items:center;gap:6px;font-size:0.75rem;color:var(--text2);padding:2px 0}
-.sub-dot{width:5px;height:5px;border-radius:50%;background:var(--blue);opacity:0.5;flex-shrink:0}
+.sub-row{display:flex;align-items:flex-start;gap:6px;font-size:0.75rem;color:var(--text2);padding:2px 0}
+.sub-dot{width:5px;height:5px;border-radius:50%;background:var(--blue);opacity:0.5;flex-shrink:0;margin-top:5px}
+.pp-list{margin-top:3px;display:flex;flex-direction:column;gap:1px}
+.pp-row{display:flex;gap:8px;font-size:0.72rem;color:var(--text2);line-height:1.4}
+.pp-name{font-weight:700;flex:0 0 52px}
+.pp-range{min-width:0}
 .att-row{display:flex;gap:5px;flex-wrap:wrap}
 .att-thumb{width:36px;height:36px;border-radius:4px;background:var(--surface3);border:1px solid var(--border);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:0.9rem}
 .att-thumb img{width:100%;height:100%;object-fit:cover}
@@ -252,7 +256,7 @@ header{background:var(--blue2);padding:0 16px;box-shadow:0 2px 4px rgba(0,0,0,0.
 /* TODO PREVIEW IN CARD */
 .todo-row{display:flex;align-items:center;gap:7px;font-size:0.75rem;color:var(--text2);padding:2px 0}
 .todo-row.done{color:var(--text3);text-decoration:line-through}
-.todo-check{width:14px;height:14px;border-radius:2px;border:1.5px solid var(--border2);background:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:0.6rem}
+.todo-check{width:14px;height:14px;border-radius:2px;border:1.5px solid var(--border2);background:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:0.6rem;color:transparent}
 .todo-check.checked{background:var(--blue);border-color:var(--blue);color:#fff}
 .todo-owner-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
 .dot-toja{background:var(--toja-color)}
