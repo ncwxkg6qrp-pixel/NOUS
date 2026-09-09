@@ -416,7 +416,9 @@ function bindStaticHandlers(){
   q('f_owner','change',syncOwnerRestrictions);
   q('f_dateTo','change',autoDetectMultiday);
   q('f_allday','change',toggleAllday);
+  q('f_dateFrom','change',suggestDateTo);
   q('f_dateFrom','change',syncSubDates);
+  q('f_dateTo','change',()=>setSuggestedDateTo(''));
   q('f_location','input',function(){addrSearch(this,'f_location_dd','f_lat','f_lon');});
   // Drag-drop on file drop area
   const fd=document.getElementById('fileDropArea');
@@ -1678,12 +1680,36 @@ function safe(s){return(s||'event').replace(/[^a-zA-Z0-9äöüÄÖÜß\-_\s]/g,'
 function icsTs(date,time,allday){if(!date)return '';const d=date.replace(/-/g,'');if(allday)return d;if(time){const t=time.replace(':','')+'00';return d+'T'+t;}return d+'T000000';}
 
 // SMART DATE SYNC
+// Zuletzt automatisch vorgeschlagenes Enddatum. Nur solange im Feld genau
+// dieser Vorschlag steht, gilt er als unberuehrt und darf mitgezogen werden —
+// ein selbst gewaehltes Ende bleibt unangetastet.
+let suggestedDateTo='';
+function setSuggestedDateTo(v){suggestedDateTo=v||'';}
+// Beim Festlegen des Beginns wird derselbe Tag als Ende vorgeschlagen. Das
+// spart das zweite Scrollen im Datepicker und aendert nichts an der Semantik:
+// Ende == Beginn bleibt ein eintaegiger Termin (siehe autoDetectMultiday).
+function suggestDateTo(){
+  const fromEl=document.getElementById('f_dateFrom');
+  const toEl=document.getElementById('f_dateTo');
+  if(!fromEl||!toEl) return;
+  const from=fromEl.value;
+  if(!from) return;
+  const to=toEl.value;
+  if(!to||to===suggestedDateTo||to<from){
+    toEl.value=from;
+    suggestedDateTo=from;
+  }
+}
 function syncSubDates(){
   const from=document.getElementById('f_dateFrom').value;
   if(!from)return;
   const year=from.slice(0,4);
   document.querySelectorAll('.sub-date').forEach(el=>{
     el.min=from;
+    // Vorgeschlagenes, noch nicht geaendertes Subevent-Datum zieht mit.
+    if(el.hasAttribute('data-autodate')&&el.value===el.dataset.autodate){
+      el.value=from;el.dataset.autodate=from;
+    }
     if(!el.value) el.setAttribute('placeholder',year);
   });
   const toEl=document.getElementById('f_dateTo');
@@ -2532,6 +2558,7 @@ function resetForm(){
   const fSplit=document.getElementById('f_splitDates');if(fSplit)fSplit.checked=false;
   PERSONS.forEach(p=>['f_from_','f_to_'].forEach(pre=>{const el=document.getElementById(pre+p);if(el)el.value='';}));
   togglePerPersonDates();
+  setSuggestedDateTo('');
   autoDetectMultiday();toggleAllday();
   syncOwnerRestrictions();
 }
@@ -2549,9 +2576,13 @@ function populateForm(ev){
   if(ev.multiday){
     document.getElementById('f_dateFrom').value=ev.dateFrom||'';
     document.getElementById('f_dateTo').value=ev.dateTo||'';
+    setSuggestedDateTo('');
   } else {
     document.getElementById('f_dateFrom').value=ev.date||'';
-    document.getElementById('f_dateTo').value='';
+    // Auch beim Bearbeiten steht im Ende-Feld der Tag des Beginns, statt leer
+    // zu bleiben; als reiner Vorschlag bleibt der Termin damit eintaegig.
+    document.getElementById('f_dateTo').value=ev.date||'';
+    setSuggestedDateTo(ev.date||'');
     document.getElementById('f_time').value=ev.time||'';
     document.getElementById('f_allday').checked=!!ev.allday;
   }
@@ -2883,11 +2914,15 @@ function addSub(data){
   subCnt++;const id='sub_'+subCnt;
   const c=document.getElementById('subContainer');
   const mainDate=document.getElementById('f_dateFrom').value||document.getElementById('f_date').value||'';
+  // Ein neu angelegtes Subevent startet auf dem Tag des Termin-Beginns.
+  // Gespeicherte Subevents behalten ihr Datum — auch ein leeres.
+  const subDate=data?(data.date||''):mainDate;
+  const subAuto=data?'':` data-autodate="${subDate}"`;
   const div=document.createElement('div');div.className='subevent-item';div.id=id;
   div.innerHTML=`<div class="sub-item-head"><span class="sub-num">Subevent ${c.children.length+1}</span><button class="remove-btn" data-action="removeSelf" data-target="${id}">✕</button></div>
     <div class="form-row" style="margin-bottom:7px">
       <div class="form-group"><label>Titel</label><input type="text" class="sub-title" placeholder="z.B. Abendessen" value="${esc(data?.title||'')}"></div>
-      <div class="form-group"><label>Datum</label><input type="date" class="sub-date" value="${data?.date||''}" min="${mainDate}"></div>
+      <div class="form-group"><label>Datum</label><input type="date" class="sub-date" value="${subDate}"${subAuto} min="${mainDate}"></div>
     </div>
     <div class="form-row-3" style="margin-bottom:7px">
       <div class="form-group"><label>Beginn</label><input type="time" class="sub-time" value="${data?.time||''}"></div>
