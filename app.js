@@ -946,21 +946,21 @@ function addAccom(data){
       <div class="addr-wrap">
         <input type="text" class="ac-addr" placeholder="Adresse suchen…" autocomplete="off" value="${esc(data?.addr||'')}"
           data-action="addrSearchInput" data-dd="acdd_${id}" data-lat="aclat_${id}" data-lon="aclon_${id}">
-        <input type="hidden" class="ac-lat" value="${data?.lat||''}">
-        <input type="hidden" class="ac-lon" value="${data?.lon||''}">
+        <input type="hidden" class="ac-lat" value="${esc(data?.lat||'')}">
+        <input type="hidden" class="ac-lon" value="${esc(data?.lon||'')}">
         <div class="addr-dropdown" id="acdd_${id}"></div>
       </div>
     </div>
     <div class="form-row" style="margin-bottom:8px">
-      <div class="form-group"><label>Check-in Datum</label><input type="date" class="ac-cin-date" value="${data?.cinDate||''}"></div>
-      <div class="form-group"><label>Check-in Zeit</label><input type="time" class="ac-cin-time" value="${data?.cinTime||''}"></div>
+      <div class="form-group"><label>Check-in Datum</label><input type="date" class="ac-cin-date" value="${esc(data?.cinDate||'')}"></div>
+      <div class="form-group"><label>Check-in Zeit</label><input type="time" class="ac-cin-time" value="${esc(data?.cinTime||'')}"></div>
     </div>
     <div class="form-row" style="margin-bottom:8px">
-      <div class="form-group"><label>Check-out Datum</label><input type="date" class="ac-cout-date" value="${data?.coutDate||''}"></div>
-      <div class="form-group"><label>Check-out Zeit</label><input type="time" class="ac-cout-time" value="${data?.coutTime||''}"></div>
+      <div class="form-group"><label>Check-out Datum</label><input type="date" class="ac-cout-date" value="${esc(data?.coutDate||'')}"></div>
+      <div class="form-group"><label>Check-out Zeit</label><input type="time" class="ac-cout-time" value="${esc(data?.coutTime||'')}"></div>
     </div>
-    <div class="form-group" style="margin-bottom:8px"><label>Buchungslink</label><input type="text" class="ac-link" placeholder="https://…" value="${data?.link||''}"></div>
-    <div class="form-group"><label>Notizen</label><textarea class="ac-notes" style="min-height:52px" placeholder="Notizen zur Unterkunft…">${data?.notes||''}</textarea></div>`;
+    <div class="form-group" style="margin-bottom:8px"><label>Buchungslink</label><input type="text" class="ac-link" placeholder="https://…" value="${esc(data?.link||'')}"></div>
+    <div class="form-group"><label>Notizen</label><textarea class="ac-notes" style="min-height:52px" placeholder="Notizen zur Unterkunft…">${esc(data?.notes||'')}</textarea></div>`;
   container.appendChild(div);
 }
 
@@ -2795,8 +2795,8 @@ function addTodo(containerId,data){
     <div class="todo-main">
       <input type="text" class="todo-text-input ${isDone?'done-text':''}" placeholder="To-do beschreiben…" value="${esc(data?.text||'')}">
       <div class="todo-datetime">
-        <input type="date" class="todo-due-date" value="${data?.dueDate||''}" style="font-size:0.75rem;padding:3px 6px;min-height:0;border-radius:6px">
-        <input type="time" class="todo-due-time" value="${data?.dueTime||''}" style="font-size:0.75rem;padding:3px 6px;min-height:0;border-radius:6px">
+        <input type="date" class="todo-due-date" value="${esc(data?.dueDate||'')}" style="font-size:0.75rem;padding:3px 6px;min-height:0;border-radius:6px">
+        <input type="time" class="todo-due-time" value="${esc(data?.dueTime||'')}" style="font-size:0.75rem;padding:3px 6px;min-height:0;border-radius:6px">
       </div>
     </div>
     <select class="todo-owner-select ow-${ownerVal}" data-action="updateTodoOwnerStyle" ${isLocked?'disabled style="opacity:0.6"':''}>
@@ -2917,20 +2917,20 @@ function addSub(data){
   // Ein neu angelegtes Subevent startet auf dem Tag des Termin-Beginns.
   // Gespeicherte Subevents behalten ihr Datum — auch ein leeres.
   const subDate=data?(data.date||''):mainDate;
-  const subAuto=data?'':` data-autodate="${subDate}"`;
+  const subAuto=data?'':` data-autodate="${esc(subDate)}"`;
   const div=document.createElement('div');div.className='subevent-item';div.id=id;
   div.innerHTML=`<div class="sub-item-head"><span class="sub-num">Subevent ${c.children.length+1}</span><button class="remove-btn" data-action="removeSelf" data-target="${id}">✕</button></div>
     <div class="form-row" style="margin-bottom:7px">
       <div class="form-group"><label>Titel</label><input type="text" class="sub-title" placeholder="z.B. Abendessen" value="${esc(data?.title||'')}"></div>
-      <div class="form-group"><label>Datum</label><input type="date" class="sub-date" value="${subDate}"${subAuto} min="${mainDate}"></div>
+      <div class="form-group"><label>Datum</label><input type="date" class="sub-date" value="${esc(subDate)}"${subAuto} min="${esc(mainDate)}"></div>
     </div>
     <div class="form-row-3" style="margin-bottom:7px">
-      <div class="form-group"><label>Beginn</label><input type="time" class="sub-time" value="${data?.time||''}"></div>
-      <div class="form-group"><label>Ende</label><input type="time" class="sub-timeend" value="${data?.timeEnd||''}"></div>
+      <div class="form-group"><label>Beginn</label><input type="time" class="sub-time" value="${esc(data?.time||'')}"></div>
+      <div class="form-group"><label>Ende</label><input type="time" class="sub-timeend" value="${esc(data?.timeEnd||'')}"></div>
       <div class="form-group"><label>Ort</label>
         <div class="addr-wrap">
           <input type="text" class="sub-loc" placeholder="Ort" value="${esc(data?.location||'')}" autocomplete="off" data-action="addrSearchInput" data-dd="sub-dd-${subCnt}" data-lat="sub-lat-${subCnt}" data-lon="sub-lon-${subCnt}">
-          <input type="hidden" class="sub-lat" value="${data?.lat||''}"><input type="hidden" class="sub-lon" value="${data?.lon||''}">
+          <input type="hidden" class="sub-lat" value="${esc(data?.lat||'')}"><input type="hidden" class="sub-lon" value="${esc(data?.lon||'')}">
           <div class="addr-dropdown" id="sub-dd-${subCnt}"></div>
         </div>
       </div>
