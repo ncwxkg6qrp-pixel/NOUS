@@ -50,7 +50,9 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    detectSessionInUrl: false,
+    // Nötig für „Passwort vergessen“: Der Link aus der Mail führt mit einem
+    // Wiederherstellungs-Token zurück in die App, den der Client hier ausliest.
+    detectSessionInUrl: true,
     storageKey: 'nous_auth'
   }
 });
@@ -477,6 +479,31 @@ async function signIn(){
   initApp(data.user);
 }
 
+// Schickt einen Link zum Zurücksetzen an die eingegebene Adresse. Die Antwort
+// verrät bewusst nicht, ob es zu der Adresse ein Konto gibt.
+async function forgotPassword(){
+  const email=document.getElementById('pwEmail').value.trim();
+  const errEl=document.getElementById('pwError');
+  errEl.classList.remove('ok');
+  if(!email){errEl.textContent='Bitte zuerst die E-Mail-Adresse eingeben';document.getElementById('pwEmail').focus();return;}
+  const btn=document.querySelector('.lock-forgot');
+  btn.disabled=true;
+  const {error}=await sb.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});
+  if(error){
+    btn.disabled=false;
+    errEl.textContent=error.status===429?'Zu viele Anfragen – bitte später erneut versuchen':'Senden fehlgeschlagen: '+error.message;
+    return;
+  }
+  errEl.classList.add('ok');
+  errEl.textContent='Falls ein Konto existiert, ist ein Link zum Zurücksetzen unterwegs. Bitte Postfach prüfen.';
+  setTimeout(()=>{btn.disabled=false;},60000);
+}
+
+function openPwModal(recovery){
+  document.getElementById('pwModalTitle').textContent=recovery?'Neues Passwort festlegen':'Passwort ändern';
+  document.getElementById('pwModal').classList.add('open');
+}
+
 async function signOut(){
   appInitialized=false;
   // Sync-Zustand vollständig zurücksetzen, sonst schreibt eine neue Anmeldung
@@ -535,6 +562,10 @@ sb.auth.onAuthStateChange((event,session)=>{
     } else {
       showLockScreen();
     }
+  } else if(event==='PASSWORD_RECOVERY'){
+    // Über den Link aus der Mail angemeldet: direkt neues Passwort abfragen.
+    if(session?.user&&!appInitialized){appInitialized=true;initApp(session.user);}
+    openPwModal(true);
   } else if(event==='SIGNED_OUT'){
     showLockScreen();
   }
@@ -3852,7 +3883,8 @@ document.addEventListener('click', e=>{
     case 'toggleHamburger': toggleHamburger(e); break;
     case 'openNewModal': openModal();closeHamburger(); break;
     case 'openInvites': openInvites(); break;
-    case 'openPwModal': document.getElementById('pwModal').classList.add('open');closeHamburger(); break;
+    case 'openPwModal': openPwModal(false);closeHamburger(); break;
+    case 'forgotPassword': forgotPassword(); break;
     case 'signOut': signOut(); break;
     // Tabs
     case 'switchTab': switchTab(t.dataset.tab,t); break;

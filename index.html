@@ -82,6 +82,9 @@ body{font-family:'Nunito',sans-serif;background:var(--bg);color:var(--text);min-
 .lock-btn{width:100%;background:var(--blue);color:#fff;border:none;border-radius:6px;padding:12px;font-size:0.88rem;font-weight:700;font-family:'Nunito',sans-serif;cursor:pointer;letter-spacing:0.02em;transition:background 0.2s}
 .lock-btn:hover{background:var(--blue2)}
 .lock-error{font-size:0.78rem;color:var(--red);margin-top:8px;min-height:18px}
+.lock-error.ok{color:var(--text2)}
+.lock-forgot{background:none;border:none;padding:4px;margin-top:6px;font-size:0.78rem;font-family:'Nunito',sans-serif;color:var(--blue);cursor:pointer;text-decoration:underline}
+.lock-forgot:disabled{color:var(--text3);cursor:default}
 
 /* APP */
 #app{display:none}
@@ -663,6 +666,7 @@ textarea{resize:vertical;min-height:64px}
       <input type="password" id="pwInput" class="lock-input" placeholder="Passwort" autocomplete="current-password">
       <button class="lock-btn" data-action="signIn">Anmelden</button>
       <div class="lock-error" id="pwError"></div>
+      <button type="button" class="lock-forgot" data-action="forgotPassword">Passwort vergessen?</button>
     </div>
   </div>
 </div>
@@ -1156,7 +1160,7 @@ textarea{resize:vertical;min-height:64px}
 <div class="modal-overlay" id="pwModal">
   <div class="modal" style="max-width:380px">
     <div class="modal-header">
-      <div class="modal-title">Passwort ändern</div>
+      <div class="modal-title" id="pwModalTitle">Passwort ändern</div>
       <div class="modal-close" data-action="closeModal" data-modal="pwModal">✕</div>
     </div>
     <div class="modal-body" style="gap:12px">
